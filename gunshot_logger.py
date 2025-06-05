@@ -37,7 +37,11 @@ CONFIG = {
     'GUNSHOT_DIR': 'gunshots',
     'STATE_FILE': 'gunshot_state.json',
     'LOG_FILE': 'gunshot_detection.log',
-    'ALSA_DEVICE': 1  # ALSA device number
+    'ALSA_DEVICE': 2,  # Google Voice Hat device number
+    'BUFFER_SIZE': 8192,  # Increased buffer size for stability
+    'LATENCY': 'high',    # High latency for better stability
+    'MAX_QUEUE_SIZE': 100,  # Maximum number of detections to queue
+    'ERROR_COOLDOWN': 60,  # Seconds to wait between repeated error messages
 }
 
 class CircularBuffer:
@@ -49,23 +53,30 @@ class CircularBuffer:
         self.is_full = False
 
     def write(self, data):
-        data_len = len(data)
-        if self.index + data_len <= self.size:
-            self.data[self.index:self.index + data_len] = data
-        else:
-            first_part = self.size - self.index
-            second_part = data_len - first_part
-            self.data[self.index:] = data[:first_part]
-            self.data[:second_part] = data[first_part:]
-        
-        self.index = (self.index + data_len) % self.size
-        if self.index == 0:
-            self.is_full = True
+        try:
+            data_len = len(data)
+            if self.index + data_len <= self.size:
+                self.data[self.index:self.index + data_len] = data
+            else:
+                first_part = self.size - self.index
+                second_part = data_len - first_part
+                self.data[self.index:] = data[:first_part]
+                self.data[:second_part] = data[first_part:]
+            
+            self.index = (self.index + data_len) % self.size
+            if self.index == 0:
+                self.is_full = True
+        except Exception as e:
+            logging.error(f"Error writing to circular buffer: {e}")
 
     def get_buffer(self):
-        if not self.is_full:
-            return self.data[:self.index]
-        return np.roll(self.data, -self.index)
+        try:
+            if not self.is_full:
+                return self.data[:self.index]
+            return np.roll(self.data, -self.index)
+        except Exception as e:
+            logging.error(f"Error getting buffer data: {e}")
+            return np.zeros(1, dtype=np.float32)
 
 class GunshotLogger:
     def __init__(self):
@@ -76,17 +87,19 @@ class GunshotLogger:
             CONFIG['CHANNELS']
         )
         self.file_counter = self.load_state()
-        self.detection_queue = queue.Queue()
+        self.detection_queue = queue.Queue(maxsize=CONFIG['MAX_QUEUE_SIZE'])
         self.running = False
         self.usb_path = self.find_usb_drive()
-        self.last_usb_log = 0  # For rate-limited USB logging
+        self.last_usb_log = 0
         self.detection_state = 'IDLE'
         self.trigger_time = None
+        self.last_error_time = 0
+        self.error_counts = {}
         
     def setup_logging(self):
         """Configure logging to both file and stdout"""
         formatter = logging.Formatter(
-            '%(asctime)s - %(message)s',
+            '%(asctime)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
         
@@ -104,6 +117,26 @@ class GunshotLogger:
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
 
+    def rate_limited_log(self, level, message, error_key=None):
+        """Rate-limited logging to prevent log spam"""
+        current_time = time.time()
+        if error_key not in self.error_counts:
+            self.error_counts[error_key] = {'count': 0, 'last_time': 0}
+        
+        if current_time - self.error_counts[error_key]['last_time'] > CONFIG['ERROR_COOLDOWN']:
+            count = self.error_counts[error_key]['count']
+            if count > 1:
+                message = f"{message} (occurred {count} times)"
+            if level == 'error':
+                self.logger.error(message)
+            elif level == 'warning':
+                self.logger.warning(message)
+            else:
+                self.logger.info(message)
+            self.error_counts[error_key] = {'count': 0, 'last_time': current_time}
+        else:
+            self.error_counts[error_key]['count'] += 1
+
     def load_state(self):
         """Load the last used file counter"""
         try:
@@ -112,6 +145,9 @@ class GunshotLogger:
                 return state.get('file_counter', 1)
         except (FileNotFoundError, json.JSONDecodeError):
             return 1
+        except Exception as e:
+            self.rate_limited_log('error', f"Failed to load state: {e}", 'load_state')
+            return 1
 
     def save_state(self):
         """Save current file counter"""
@@ -119,7 +155,7 @@ class GunshotLogger:
             with open(CONFIG['STATE_FILE'], 'w') as f:
                 json.dump({'file_counter': self.file_counter}, f)
         except Exception as e:
-            self.logger.error(f"Failed to save state: {e}")
+            self.rate_limited_log('error', f"Failed to save state: {e}", 'save_state')
 
     def find_usb_drive(self):
         """Find the USB drive mount point"""
@@ -128,70 +164,85 @@ class GunshotLogger:
                 if part.mountpoint.startswith('/media/pi'):
                     return Path(part.mountpoint)
             
-            # Log USB missing (rate-limited to once per minute)
             current_time = time.time()
             if current_time - self.last_usb_log >= 60:
                 self.logger.warning("No USB drive found")
                 self.last_usb_log = current_time
                 
         except Exception as e:
-            self.logger.error(f"Failed to find USB drive: {e}")
+            self.rate_limited_log('error', f"Failed to find USB drive: {e}", 'find_usb')
         return None
 
     def calculate_db(self, audio_chunk):
         """Calculate decibel level from audio chunk"""
-        if len(audio_chunk) == 0:
+        try:
+            if len(audio_chunk) == 0:
+                return -np.inf
+            rms = np.sqrt(np.mean(np.square(audio_chunk)))
+            db = 20 * np.log10(rms + 1e-10)  # Add small value to avoid log(0)
+            return db
+        except Exception as e:
+            self.rate_limited_log('error', f"Error calculating dB: {e}", 'calc_db')
             return -np.inf
-        rms = np.sqrt(np.mean(np.square(audio_chunk)))
-        db = 20 * np.log10(rms + 1e-10)  # Add small value to avoid log(0)
-        return db
 
     def is_operating_hours(self):
         """Check if current time is within operating hours"""
-        now = datetime.datetime.now().time()
-        start = datetime.datetime.strptime(CONFIG['OPERATING_HOURS']['start'], '%H:%M').time()
-        end = datetime.datetime.strptime(CONFIG['OPERATING_HOURS']['end'], '%H:%M').time()
-        return start <= now <= end
+        try:
+            now = datetime.datetime.now().time()
+            start = datetime.datetime.strptime(CONFIG['OPERATING_HOURS']['start'], '%H:%M').time()
+            end = datetime.datetime.strptime(CONFIG['OPERATING_HOURS']['end'], '%H:%M').time()
+            return start <= now <= end
+        except Exception as e:
+            self.rate_limited_log('error', f"Error checking operating hours: {e}", 'check_hours')
+            return True  # Default to running if there's an error
 
     def audio_callback(self, indata, frames, time_info, status):
         """Callback for audio stream processing"""
         if status:
-            self.logger.warning(f"Audio callback status: {status}")
-
-        # Always write to circular buffer
-        self.buffer.write(indata.flatten())
-
-        # Only process detection during operating hours
-        if not self.is_operating_hours():
-            return
-
-        # Calculate dB level
-        db_level = self.calculate_db(indata)
+            self.rate_limited_log('warning', f"Audio callback status: {status}", 'audio_status')
         
-        # State machine for detection
-        if self.detection_state == 'IDLE':
-            if db_level > CONFIG['DETECTION_THRESHOLD']:
-                self.detection_state = 'TRIGGERED'
-                self.trigger_time = time.time()
-        
-        elif self.detection_state == 'TRIGGERED':
-            if time.time() - self.trigger_time >= 2.0:  # 2 seconds post-trigger
-                self.detection_queue.put((db_level, self.buffer.get_buffer().copy()))
-                self.detection_state = 'IDLE'
+        try:
+            # Always write to circular buffer
+            self.buffer.write(indata.flatten())
+
+            # Only process detection during operating hours
+            if not self.is_operating_hours():
+                return
+
+            # Calculate dB level
+            db_level = self.calculate_db(indata)
+            
+            # State machine for detection
+            if self.detection_state == 'IDLE':
+                if db_level > CONFIG['DETECTION_THRESHOLD']:
+                    self.detection_state = 'TRIGGERED'
+                    self.trigger_time = time.time()
+                    self.logger.info(f"Gunshot detected at {db_level:.1f} dB")
+            
+            elif self.detection_state == 'TRIGGERED':
+                if time.time() - self.trigger_time >= 2.0:  # 2 seconds post-trigger
+                    try:
+                        self.detection_queue.put_nowait((db_level, self.buffer.get_buffer().copy()))
+                    except queue.Full:
+                        self.rate_limited_log('warning', "Detection queue full, skipping detection", 'queue_full')
+                    self.detection_state = 'IDLE'
+                    
+        except Exception as e:
+            self.rate_limited_log('error', f"Error in audio callback: {e}", 'audio_callback')
 
     def save_gunshot(self, audio_data, db_level):
         """Save detected gunshot to file"""
         if not self.usb_path:
-            self.logger.error("No USB drive found")
+            self.rate_limited_log('error', "No USB drive found", 'no_usb')
             return
 
-        gunshot_dir = self.usb_path / CONFIG['GUNSHOT_DIR']
-        gunshot_dir.mkdir(exist_ok=True)
-
-        filename = f"gunshot_{self.file_counter:03d}.wav"
-        filepath = gunshot_dir / filename
-
         try:
+            gunshot_dir = self.usb_path / CONFIG['GUNSHOT_DIR']
+            gunshot_dir.mkdir(exist_ok=True)
+
+            filename = f"gunshot_{self.file_counter:03d}.wav"
+            filepath = gunshot_dir / filename
+
             # Reshape audio data for stereo and convert to int32
             audio_data = audio_data.reshape(-1, CONFIG['CHANNELS']).astype(np.int32)
             
@@ -200,14 +251,14 @@ class GunshotLogger:
             
             # Log detection
             self.logger.info(
-                f"gunshot_{self.file_counter:03d} detected due to decibel reading of {db_level:.1f} dB"
+                f"gunshot_{self.file_counter:03d} saved with decibel reading of {db_level:.1f} dB"
             )
             
             self.file_counter += 1
             self.save_state()
             
         except Exception as e:
-            self.logger.error(f"Failed to save gunshot: {e}")
+            self.rate_limited_log('error', f"Failed to save gunshot: {e}", 'save_gunshot')
 
     def detection_worker(self):
         """Worker thread to handle gunshot detections"""
@@ -218,7 +269,7 @@ class GunshotLogger:
             except queue.Empty:
                 continue
             except Exception as e:
-                self.logger.error(f"Detection worker error: {e}")
+                self.rate_limited_log('error', f"Detection worker error: {e}", 'worker_error')
 
     def start(self):
         """Start the gunshot logger"""
@@ -229,16 +280,21 @@ class GunshotLogger:
             self.worker_thread = threading.Thread(target=self.detection_worker)
             self.worker_thread.start()
 
-            # Start audio stream
+            # Start audio stream with improved parameters
             with sd.InputStream(
-                device=CONFIG['ALSA_DEVICE'],  # Use configured ALSA device
+                device=CONFIG['ALSA_DEVICE'],
                 channels=CONFIG['CHANNELS'],
                 samplerate=CONFIG['SAMPLE_RATE'],
-                callback=self.audio_callback
+                blocksize=CONFIG['BUFFER_SIZE'],
+                latency=CONFIG['LATENCY'],
+                callback=self.audio_callback,
+                dtype=np.float32
             ):
                 self.logger.info("Gunshot logger started")
                 while self.running:
                     time.sleep(1)
+                    # Periodically check USB drive
+                    self.usb_path = self.find_usb_drive()
 
         except Exception as e:
             self.logger.error(f"Failed to start gunshot logger: {e}")
