@@ -38,10 +38,11 @@ CONFIG = {
     'STATE_FILE': 'gunshot_state.json',
     'LOG_FILE': 'gunshot_detection.log',
     'ALSA_DEVICE': 2,  # Google Voice Hat device number
-    'BUFFER_SIZE': 8192,  # Increased buffer size for stability
+    'BUFFER_SIZE': 16384,  # Doubled buffer size for better overflow handling
     'LATENCY': 'high',    # High latency for better stability
     'MAX_QUEUE_SIZE': 100,  # Maximum number of detections to queue
     'ERROR_COOLDOWN': 60,  # Seconds to wait between repeated error messages
+    'BLOCKS_PER_BUFFER': 4,  # Number of blocks to buffer
 }
 
 class CircularBuffer:
@@ -199,11 +200,19 @@ class GunshotLogger:
     def audio_callback(self, indata, frames, time_info, status):
         """Callback for audio stream processing"""
         if status:
-            self.rate_limited_log('warning', f"Audio callback status: {status}", 'audio_status')
+            # If we get an overflow, try to recover by processing what we have
+            if status.input_overflow:
+                self.rate_limited_log('warning', f"Audio callback status: {status}", 'audio_status')
+                # Still process the data we have
+                pass
+            else:
+                self.rate_limited_log('warning', f"Audio callback status: {status}", 'audio_status')
+                return
         
         try:
             # Always write to circular buffer
-            self.buffer.write(indata.flatten())
+            # Use a copy to prevent any potential buffer overruns
+            self.buffer.write(indata.copy().flatten())
 
             # Only process detection during operating hours
             if not self.is_operating_hours():
@@ -222,6 +231,7 @@ class GunshotLogger:
             elif self.detection_state == 'TRIGGERED':
                 if time.time() - self.trigger_time >= 2.0:  # 2 seconds post-trigger
                     try:
+                        # Use non-blocking put with timeout
                         self.detection_queue.put_nowait((db_level, self.buffer.get_buffer().copy()))
                     except queue.Full:
                         self.rate_limited_log('warning', "Detection queue full, skipping detection", 'queue_full')
@@ -278,8 +288,13 @@ class GunshotLogger:
             
             # Start detection worker thread
             self.worker_thread = threading.Thread(target=self.detection_worker)
+            self.worker_thread.daemon = True  # Make thread daemon so it exits when main thread exits
             self.worker_thread.start()
 
+            # Configure sounddevice settings
+            sd.default.blocksize = CONFIG['BUFFER_SIZE']
+            sd.default.latency = ('high', 'high')  # High latency for both input and output
+            
             # Start audio stream with improved parameters
             with sd.InputStream(
                 device=CONFIG['ALSA_DEVICE'],
@@ -288,9 +303,13 @@ class GunshotLogger:
                 blocksize=CONFIG['BUFFER_SIZE'],
                 latency=CONFIG['LATENCY'],
                 callback=self.audio_callback,
-                dtype=np.float32
+                dtype=np.float32,
+                extra_settings=[
+                    ('hw:CARD=sndrpigooglevoi', 'periods', str(CONFIG['BLOCKS_PER_BUFFER'])),
+                    ('hw:CARD=sndrpigooglevoi', 'buffer_size', str(CONFIG['BUFFER_SIZE'] * CONFIG['BLOCKS_PER_BUFFER']))
+                ]
             ):
-                self.logger.info("Gunshot logger started")
+                self.logger.info(f"Gunshot logger started with buffer size: {CONFIG['BUFFER_SIZE']}")
                 while self.running:
                     time.sleep(1)
                     # Periodically check USB drive
