@@ -303,12 +303,12 @@ class GunshotLogger:
                 blocksize=CONFIG['BUFFER_SIZE'],
                 latency=CONFIG['LATENCY'],
                 callback=self.audio_callback,
-                dtype=np.float32,
-                extra_settings=[
-                    ('hw:CARD=sndrpigooglevoi', 'periods', str(CONFIG['BLOCKS_PER_BUFFER'])),
-                    ('hw:CARD=sndrpigooglevoi', 'buffer_size', str(CONFIG['BUFFER_SIZE'] * CONFIG['BLOCKS_PER_BUFFER']))
-                ]
-            ):
+                dtype=np.float32
+            ) as stream:
+                # Configure device-specific settings if needed
+                if hasattr(stream, '_streaminfo'):
+                    stream._streaminfo.suggestedLatency = 0.2
+                
                 self.logger.info(f"Gunshot logger started with buffer size: {CONFIG['BUFFER_SIZE']}")
                 while self.running:
                     time.sleep(1)
