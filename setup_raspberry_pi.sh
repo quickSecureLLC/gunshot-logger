@@ -182,14 +182,13 @@ verify_usb_mount() {
     return 0
 }
 
-# Step 1: Update system
-print_step "Step 1: Updating system packages..."
-retry sudo apt update
-retry sudo apt upgrade -y
+# Step 1: Install required packages (skip OS updates)
+print_step "Step 1: Installing required packages..."
+retry sudo apt install -y python3 python3-pip git alsa-utils util-linux python3-numpy python3-scipy python3-psutil
 
-# Step 2: Install required packages
-print_step "Step 2: Installing required packages..."
-retry sudo apt install -y python3 python3-pip git alsa-utils util-linux
+# Step 2: Install pip packages that aren't available in apt
+print_step "Step 2: Installing additional Python packages..."
+retry pip3 install sounddevice --break-system-packages
 
 # Step 3: Clone repository
 print_step "Step 3: Cloning repository..."
@@ -201,12 +200,8 @@ fi
 retry git clone https://github.com/quickSecureLLC/gunshot-logger.git
 cd gunshot-logger
 
-# Step 4: Install Python dependencies
-print_step "Step 4: Installing Python dependencies..."
-retry pip3 install numpy sounddevice scipy psutil
-
-# Step 5: Configure audio system
-print_step "Step 5: Configuring audio system..."
+# Step 4: Configure audio system
+print_step "Step 4: Configuring audio system..."
 
 # Detect audio card dynamically
 audio_card=$(detect_audio_card)
@@ -226,22 +221,22 @@ ctl.!default {
 }
 EOF
 
-# Step 6: Setup USB mounting
-print_step "Step 6: Setting up USB mounting..."
+# Step 5: Setup USB mounting
+print_step "Step 5: Setting up USB mounting..."
 if ! setup_usb_mount; then
     print_warning "USB setup failed, continuing without USB mount"
     print_warning "You will need to manually mount USB drive later"
 fi
 
-# Step 7: Test audio system
-print_step "Step 7: Testing audio system..."
+# Step 6: Test audio system
+print_step "Step 6: Testing audio system..."
 if ! python3 test_audio.py; then
     print_error "Audio test failed"
     exit 1
 fi
 
-# Step 8: Create systemd service with pre-checks
-print_step "Step 8: Creating systemd service..."
+# Step 7: Create systemd service with pre-checks
+print_step "Step 7: Creating systemd service..."
 sudo tee /etc/systemd/system/gunshot-logger.service > /dev/null <<EOF
 [Unit]
 Description=Gunshot Detection and Logging Service
@@ -264,13 +259,13 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-# Step 9: Enable and start service
-print_step "Step 9: Enabling and starting service..."
+# Step 8: Enable and start service
+print_step "Step 8: Enabling and starting service..."
 sudo systemctl daemon-reload
 sudo systemctl enable gunshot-logger.service
 
-# Step 10: Create enhanced verification script
-print_step "Step 10: Creating verification script..."
+# Step 9: Create enhanced verification script
+print_step "Step 9: Creating verification script..."
 tee verify_setup.sh > /dev/null <<EOF
 #!/bin/bash
 
@@ -344,8 +339,8 @@ EOF
 
 chmod +x verify_setup.sh
 
-# Step 11: Create enhanced troubleshooting script
-print_step "Step 11: Creating troubleshooting script..."
+# Step 10: Create enhanced troubleshooting script
+print_step "Step 10: Creating troubleshooting script..."
 tee troubleshoot.sh > /dev/null <<EOF
 #!/bin/bash
 
@@ -396,8 +391,8 @@ EOF
 
 chmod +x troubleshoot.sh
 
-# Step 12: Create USB mount helper script
-print_step "Step 12: Creating USB mount helper..."
+# Step 11: Create USB mount helper script
+print_step "Step 11: Creating USB mount helper..."
 tee mount_usb.sh > /dev/null <<EOF
 #!/bin/bash
 
@@ -427,8 +422,8 @@ EOF
 
 chmod +x mount_usb.sh
 
-# Step 13: Final verification and start
-print_step "Step 13: Final verification and service start..."
+# Step 12: Final verification and start
+print_step "Step 12: Final verification and service start..."
 
 # Verify USB mount before starting service
 if verify_usb_mount; then

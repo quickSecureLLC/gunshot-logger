@@ -26,13 +26,13 @@ chmod +x setup_raspberry_pi.sh
 MANUAL SETUP STEPS:
 ===================
 
-STEP 1: Update System
----------------------
-sudo apt update && sudo apt upgrade -y
+STEP 1: Install Required Packages (No OS Updates)
+-------------------------------------------------
+sudo apt install -y python3 python3-pip git alsa-utils util-linux python3-numpy python3-scipy python3-psutil
 
-STEP 2: Install Required Packages
----------------------------------
-sudo apt install -y python3 python3-pip git alsa-utils util-linux
+STEP 2: Install Additional Python Packages
+------------------------------------------
+pip3 install sounddevice --break-system-packages
 
 STEP 3: Clone Repository
 ------------------------
@@ -40,11 +40,7 @@ cd ~
 git clone https://github.com/quickSecureLLC/gunshot-logger.git
 cd gunshot-logger
 
-STEP 4: Install Python Dependencies
------------------------------------
-pip3 install numpy sounddevice scipy psutil
-
-STEP 5: Setup USB Drive (Automatic Detection)
+STEP 4: Setup USB Drive (Automatic Detection)
 ---------------------------------------------
 # Insert USB drive before running this step
 # The setup script will automatically:
@@ -69,7 +65,7 @@ echo "UUID=YOUR-UUID /media/pi/gunshots vfat defaults,noatime,uid=1000,gid=1000 
 # Mount:
 sudo mount /media/pi/gunshots
 
-STEP 6: Configure Audio System (Automatic Detection)
+STEP 5: Configure Audio System (Automatic Detection)
 ---------------------------------------------------
 # The setup script will automatically:
 # - Detect I2S/Google Voice Hat audio card
@@ -94,11 +90,11 @@ ctl.!default {
 }
 EOF
 
-STEP 7: Test Audio System
+STEP 6: Test Audio System
 -------------------------
 python3 test_audio.py
 
-STEP 8: Create System Service (With Pre-checks)
+STEP 7: Create System Service (With Pre-checks)
 -----------------------------------------------
 sudo tee /etc/systemd/system/gunshot-logger.service > /dev/null <<EOF
 [Unit]
@@ -122,13 +118,13 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-STEP 9: Enable and Start Service
+STEP 8: Enable and Start Service
 --------------------------------
 sudo systemctl daemon-reload
 sudo systemctl enable gunshot-logger.service
 sudo systemctl start gunshot-logger.service
 
-STEP 10: Verify Installation
+STEP 9: Verify Installation
 ----------------------------
 # Run comprehensive verification:
 ./verify_setup.sh

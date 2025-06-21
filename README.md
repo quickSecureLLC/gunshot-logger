@@ -28,7 +28,8 @@ sudo apt update && sudo apt upgrade -y
 
 #### 2. Install Dependencies
 ```bash
-sudo apt install -y python3 python3-pip git alsa-utils
+sudo apt install -y python3 python3-pip git alsa-utils util-linux python3-numpy python3-scipy python3-psutil
+pip3 install sounddevice --break-system-packages
 ```
 
 #### 3. Clone Repository
@@ -38,12 +39,7 @@ git clone https://github.com/quickSecureLLC/gunshot-logger.git
 cd gunshot-logger
 ```
 
-#### 4. Install Python Packages
-```bash
-pip3 install numpy sounddevice scipy psutil
-```
-
-#### 5. Configure Audio
+#### 4. Configure Audio
 ```bash
 # Check audio devices
 aplay -l
@@ -63,12 +59,12 @@ ctl.!default {
 EOF
 ```
 
-#### 6. Test Audio System
+#### 5. Test Audio System
 ```bash
 python3 test_audio.py
 ```
 
-#### 7. Setup USB Storage
+#### 6. Setup USB Storage
 ```bash
 # Create mount directory
 sudo mkdir -p /media/pi
@@ -78,7 +74,7 @@ sudo chown pi:pi /media/pi
 sudo mount /dev/sda1 /media/pi
 ```
 
-#### 8. Create System Service
+#### 7. Create System Service
 ```bash
 sudo tee /etc/systemd/system/gunshot-logger.service > /dev/null <<EOF
 [Unit]
@@ -99,7 +95,7 @@ WantedBy=multi-user.target
 EOF
 ```
 
-#### 9. Start Service
+#### 8. Start Service
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable gunshot-logger.service
