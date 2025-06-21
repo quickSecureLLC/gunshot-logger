@@ -40,14 +40,14 @@ cd ~
 git clone https://github.com/quickSecureLLC/gunshot-logger.git
 cd gunshot-logger
 
-STEP 4: Setup USB Drive (Automatic Detection)
----------------------------------------------
+STEP 4: Setup USB Drive (Direct Mount)
+--------------------------------------
 # Insert USB drive before running this step
 # The setup script will automatically:
 # - Detect current user (not hardcoded to 'pi')
 # - Create mount point: /media/YOUR_USERNAME/gunshots
-# - Get USB UUID and create proper fstab entry
-# - Mount the drive with correct ownership
+# - Find unmounted USB partition and mount directly
+# - Set proper ownership during mount
 
 # Manual USB setup (if automatic fails):
 # Get your username:
@@ -57,17 +57,11 @@ whoami
 sudo mkdir -p /media/YOUR_USERNAME/gunshots
 sudo chown YOUR_USERNAME:YOUR_USERNAME /media/YOUR_USERNAME/gunshots
 
-# Find your USB device:
-lsblk
+# Find unmounted USB partition:
+lsblk -pnro NAME,TYPE,MOUNTPOINT | awk '$2=="part" && $3=="" {print $1; exit}'
 
-# Get UUID (replace /dev/sda1 with your device):
-sudo blkid /dev/sda1
-
-# Add to /etc/fstab (replace UUID and YOUR_USERNAME):
-echo "UUID=YOUR-UUID /media/YOUR_USERNAME/gunshots vfat defaults,noatime,uid=$(id -u),gid=$(id -g) 0 2" | sudo tee -a /etc/fstab
-
-# Mount:
-sudo mount /media/YOUR_USERNAME/gunshots
+# Mount directly (replace /dev/sda1 with your device):
+sudo mount -t vfat -o uid=$(id -u),gid=$(id -g),defaults,noatime /dev/sda1 /media/YOUR_USERNAME/gunshots
 
 STEP 5: Configure Audio System (Automatic Detection)
 ---------------------------------------------------
@@ -175,10 +169,10 @@ Check USB status (replace YOUR_USERNAME with your actual username):
 mountpoint -q /media/YOUR_USERNAME/gunshots && echo "Mounted" || echo "Not mounted"
 
 Manual mount by device (replace YOUR_USERNAME):
-sudo mount /dev/sda1 /media/YOUR_USERNAME/gunshots
+sudo mount -t vfat -o uid=$(id -u),gid=$(id -g),defaults,noatime /dev/sda1 /media/YOUR_USERNAME/gunshots
 
-Manual mount by UUID (replace YOUR_USERNAME):
-sudo mount UUID=your-uuid /media/YOUR_USERNAME/gunshots
+Find unmounted USB partitions:
+lsblk -pnro NAME,TYPE,MOUNTPOINT | awk '$2=="part" && $3=="" {print $1}'
 
 TROUBLESHOOTING:
 ================

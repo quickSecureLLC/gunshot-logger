@@ -155,48 +155,35 @@ setup_usb_mount() {
     
     sudo chmod 755 "$mount_point"
     
-    # Detect USB drive
-    local usb_identifier=$(detect_usb_drive)
-    if [ $? -ne 0 ]; then
+    # Detect USB partition directly
+    print_status "Detecting USB partition..."
+    # grab the first unmounted partition
+    local usb_dev=$(lsblk -pnro NAME,TYPE,MOUNTPOINT | awk '$2=="part" && $3=="" {print $1; exit}')
+    if [ -z "$usb_dev" ]; then
+        print_error "No unmounted USB partition found!"
+        print_error "Please insert a USB drive and try again."
         return 1
     fi
     
-    # Get filesystem type
-    local fstype="vfat"
-    if [[ "$usb_identifier" == UUID=* ]]; then
-        local uuid=${usb_identifier#UUID=}
-        fstype=$(sudo blkid -s TYPE -o value -U "$uuid" 2>/dev/null || echo "vfat")
-    else
-        fstype=$(sudo blkid -s TYPE -o value "$usb_identifier" 2>/dev/null || echo "vfat")
-    fi
+    print_status "Will mount $usb_dev → $mount_point"
     
+    # Get filesystem type
+    local fstype=$(sudo blkid -s TYPE -o value "$usb_dev" 2>/dev/null || echo "vfat")
     print_status "Filesystem type: $fstype"
     
-    # Create fstab entry with proper syntax
-    local fstab_entry="$usb_identifier $mount_point $fstype defaults,noatime,uid=$(id -u $current_user),gid=$(id -g $current_user) 0 2"
+    # mount it directly, with the right uid/gid
+    sudo mount -t "$fstype" \
+         -o uid=$(id -u $current_user),gid=$(id -g $current_user),defaults,noatime \
+         "$usb_dev" "$mount_point"
     
-    # Check if entry already exists
-    if ! grep -q "$mount_point" /etc/fstab; then
-        print_status "Adding USB mount to /etc/fstab..."
-        echo "$fstab_entry" | sudo tee -a /etc/fstab > /dev/null
+    if [ $? -eq 0 ]; then
+        print_status "USB mounted successfully at $mount_point"
         
-        # Verify fstab entry is valid
-        if ! sudo mount -a --fake; then
-            print_error "Invalid fstab entry added. Removing..."
-            sudo sed -i "\|$mount_point|d" /etc/fstab
-            return 1
-        fi
-    else
-        print_warning "USB mount entry already exists in /etc/fstab"
-    fi
-    
-    # Try to mount
-    print_status "Mounting USB drive..."
-    if sudo mount "$mount_point"; then
-        print_status "USB drive mounted successfully"
+        # Show mount info
+        df -h "$mount_point"
         return 0
     else
-        print_error "Failed to mount USB drive"
+        print_error "Direct mount failed for $usb_dev"
         return 1
     fi
 }
@@ -290,8 +277,8 @@ Type=simple
 User=$current_user
 WorkingDirectory=/home/$current_user/gunshot-logger
 Environment="PYTHONUNBUFFERED=1"
-ExecStartPre=/bin/bash -c 'if ! mountpoint -q "$mount_point"; then echo "USB not mounted, attempting to mount..."; mount "$mount_point" || exit 1; fi'
-ExecStartPre=/bin/bash -c 'if [ ! -w "$mount_point" ]; then echo "USB not writable"; exit 1; fi'
+ExecStartPre=/bin/bash -c 'if [ ! -d "$mount_point" ]; then echo "Mount point does not exist"; exit 1; fi'
+ExecStartPre=/bin/bash -c 'if [ ! -w "$mount_point" ]; then echo "Mount point not writable"; exit 1; fi'
 ExecStart=/usr/bin/python3 /home/$current_user/gunshot-logger/gunshot_logger.py
 Restart=always
 RestartSec=5
@@ -349,15 +336,18 @@ else
     echo "✗ USB drive is not mounted"
     echo "Available USB devices:"
     lsblk | grep -E "(sda|sdb|sdc)"
+    echo ""
+    echo "To mount USB drive manually:"
+    echo "./mount_usb.sh"
 fi
 
 echo ""
-echo "5. Checking fstab entry..."
-if grep -q "$mount_point" /etc/fstab; then
-    echo "✓ fstab entry exists"
-    grep "$mount_point" /etc/fstab
+echo "5. Checking mount point permissions..."
+if [ -d "$mount_point" ]; then
+    echo "✓ Mount point exists"
+    ls -ld "$mount_point"
 else
-    echo "✗ fstab entry missing"
+    echo "✗ Mount point does not exist"
 fi
 
 echo ""
@@ -464,17 +454,41 @@ lsblk | grep -E "(sda|sdb|sdc)"
 echo ""
 echo "Attempting to mount USB drive..."
 
-# Try to mount using fstab
-if sudo mount "$mount_point"; then
-    echo "✓ USB drive mounted successfully"
+# Check if already mounted
+if mountpoint -q "$mount_point"; then
+    echo "✓ USB drive already mounted at $mount_point"
     df -h "$mount_point"
-else
-    echo "✗ Failed to mount using fstab"
+    exit 0
+fi
+
+# Find unmounted USB partition
+usb_dev=$(lsblk -pnro NAME,TYPE,MOUNTPOINT | awk '$2=="part" && $3=="" {print $1; exit}')
+
+if [ -z "$usb_dev" ]; then
+    echo "✗ No unmounted USB partition found"
     echo ""
     echo "Manual mount options:"
     echo "1. Find your USB device: lsblk"
     echo "2. Mount manually: sudo mount /dev/sda1 $mount_point"
-    echo "3. Or mount by UUID: sudo mount UUID=your-uuid $mount_point"
+    exit 1
+fi
+
+echo "Found USB device: $usb_dev"
+
+# Get filesystem type
+fstype=$(sudo blkid -s TYPE -o value "$usb_dev" 2>/dev/null || echo "vfat")
+echo "Filesystem type: $fstype"
+
+# Mount directly
+if sudo mount -t "$fstype" -o uid=$(id -u),gid=$(id -g),defaults,noatime "$usb_dev" "$mount_point"; then
+    echo "✓ USB drive mounted successfully at $mount_point"
+    df -h "$mount_point"
+else
+    echo "✗ Failed to mount USB drive"
+    echo ""
+    echo "Manual mount options:"
+    echo "1. Find your USB device: lsblk"
+    echo "2. Mount manually: sudo mount /dev/sda1 $mount_point"
 fi
 EOF
 
