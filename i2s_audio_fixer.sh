@@ -38,8 +38,13 @@ fi
 print_step "1) Creating a clean slate for audio configuration..."
 # Remove the ALSA config file that is causing 'arecord -l' to fail.
 if [ -f /etc/asound.conf ]; then
-    print_status "Backing up and removing potentially corrupt /etc/asound.conf"
-    sudo mv /etc/asound.conf /etc/asound.conf.bak-$(date +%s)
+    print_warning "Found a potentially corrupt /etc/asound.conf."
+    read -p "    Do you want to back up and remove it? (Y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        print_status "Backing up and removing /etc/asound.conf"
+        sudo mv /etc/asound.conf /etc/asound.conf.bak-$(date +%s)
+    fi
 fi
 
 # Determine the correct boot config file path
@@ -60,6 +65,8 @@ sudo cp "$cfile" "$cfile.bak-$(date +%s)"
 # Comment out all potentially conflicting audio overlays
 print_status "Commenting out all existing I2S/audio overlays in $cfile..."
 sudo sed -i -E "s/^(dtoverlay=(i2s-mems|googlevoicehat-soundcard|hifiberry-dac|audioinjector-wm8731-als|iqaudio-dac|pcf8523-rtc|i2c-rtc,pcf8523))/#\1/" "$cfile"
+print_status "Verification: The following audio lines are now commented out:"
+sudo grep -E "^#dtoverlay=(i2s|google|hifi|audio|pcf|i2c)" "$cfile" | sed 's/^/    /' || print_status "    (No existing overlays found to comment out)"
 print_status "Audio configuration has been reset."
 
 
@@ -103,7 +110,14 @@ if [ -n "$suggestion" ]; then
     print_status "Adding the following line to $cfile:"
     echo -e "    ${GREEN}$suggestion${NC}"
     echo -e "\n# Added by I2S Audio Fixer\n$suggestion\n" | sudo tee -a "$cfile" > /dev/null
-    print_status "Boot configuration has been updated."
+    
+    # Verification step
+    if sudo grep -q "^$suggestion" "$cfile"; then
+        print_status "✓ Verification successful. Driver correctly written to config file."
+    else
+        print_error "Failed to write the new driver to $cfile. Please check file permissions and try again."
+        exit 1
+    fi
 else
     print_warning "No driver was selected."
     print_status "Please manually edit $cfile and add the correct 'dtoverlay' for your hardware."
@@ -114,13 +128,16 @@ fi
 print_step "5) Finalizing permissions and next steps..."
 user_name=${SUDO_USER:-$(whoami)}
 print_status "Adding user '$user_name' to the 'audio' group for hardware access..."
-sudo usermod -aG audio "$user_name"
+sudo usermod -aG audio "$user_name" || print_warning "User was already in the audio group."
 
 echo
 print_error "A system reboot is REQUIRED for these changes to take effect."
 echo
-print_status "After rebooting, please run the main setup script again:"
-print_status "  ./setup_raspberry_pi.sh"
+print_status "After rebooting, the very first command you should run is:"
+echo -e "    ${YELLOW}arecord -l${NC}"
+print_status "If that command succeeds without error, the hardware is fixed."
+print_status "You can then proceed to run the main setup script again:"
+print_status "    ./setup_raspberry_pi.sh"
 echo
 read -p "Reboot now? (y/N) " -n 1 -r
 echo
