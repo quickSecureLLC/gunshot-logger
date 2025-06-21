@@ -530,24 +530,14 @@ fi
 
 print_status "Probing hardware with Python sounddevice..."
 if ! python3 -c "import sounddevice as sd; print('sounddevice version:', sd.__version__); print(sd.query_devices())"; then
-    print_error "Failed to query audio devices via Python. PortAudio or ALSA may be misconfigured."
-    print_error "This is a critical error, indicating the OS cannot see the microphone."
+    print_error "CRITICAL: Failed to query audio devices via Python."
     echo ""
-    print_warning "RUNNING DIAGNOSTICS..."
-    echo "--- ALSA Playback Devices (aplay -l) ---"
-    aplay -l || true
-    echo "--- ALSA Capture Devices (arecord -l) ---"
-    arecord -l || true
-    echo "--- Kernel Log (dmesg | grep -i -E 'audio|i2s|voicehat|snd') ---"
-    dmesg | grep -i -E 'audio|i2s|voicehat|snd' --color=never || echo "No relevant audio-related kernel messages."
-    echo "--- ALSA Config (/etc/asound.conf) ---"
-    cat /etc/asound.conf || echo "/etc/asound.conf not found."
-    echo "--- Boot Config (/boot/config.txt audio overlays) ---"
-    grep -i "dtoverlay" /boot/config.txt || echo "No dtoverlay found in /boot/config.txt"
-    echo "--- DIAGNOSTICS END ---"
+    print_warning "This is a fatal error, indicating the OS cannot see the microphone hardware."
+    print_warning "The most common cause is an incorrect hardware driver ('dtoverlay') in /boot/config.txt."
     echo ""
-    print_error "A REBOOT IS LIKELY REQUIRED if /boot/config.txt was changed."
-    print_error "If rebooting does not help, the 'dtoverlay' in /boot/config.txt may be incorrect for your specific I2S microphone."
+    print_error "Please run the dedicated I2S troubleshooter to fix this:"
+    print_status "./i2s_troubleshooter.sh"
+    echo ""
     exit 1
 fi
 print_status "Audio hardware probed successfully."
