@@ -185,19 +185,26 @@ detect_usb_drive() {
 detect_audio_card() {
     print_status "Detecting audio devices..."
     
-    # Show all audio cards
-    aplay -l
+    # Use a more robust method to find the card number
+    local i2s_card_info
+    i2s_card_info=$(aplay -l | grep -i -E '(voicehat|i2s|snd-soc-dummy)')
     
-    # Try to detect I2S/Google Voice Hat card
-    local i2s_card=$(cat /proc/asound/cards | awk '/I2S/ || /Voice/ || /Google/ {print $1; exit}')
-    
-    if [ -n "$i2s_card" ]; then
-        print_status "Detected I2S card: $i2s_card"
-        echo "$i2s_card"
+    local card_num
+    card_num=$(echo "$i2s_card_info" | awk -F' ' '{print $2}' | sed 's/://')
+
+    if [[ "$card_num" =~ ^[0-9]+$ ]]; then
+        print_status "Detected I2S-compatible card: $card_num"
+        echo "$card_num"
     else
-        # Fallback to card 2 (common for Google Voice Hat)
-        print_warning "Could not detect I2S card, using default card 2"
-        echo "2"
+        # Fallback to the old method if the new one fails
+        card_num=$(cat /proc/asound/cards | awk '/I2S/ || /Voice/ || /Google/ {print $1; exit}')
+        if [[ "$card_num" =~ ^[0-9]+$ ]]; then
+            print_warning "Primary detection failed, using fallback. Detected card: $card_num"
+            echo "$card_num"
+        else
+            print_warning "Could not reliably detect an I2S card, using default card 2"
+            echo "2"
+        fi
     fi
 }
 
@@ -448,26 +455,64 @@ sed -i.bak \
     gunshot_logger.py
 print_status "gunshot_logger.py patched successfully for dynamic paths and default audio device."
 
-# Step 5: Configure audio system
-print_step "Step 5: Configuring audio system..."
-
-# Detect audio card dynamically
-audio_card=$(detect_audio_card)
-
-# Create ALSA configuration
-print_status "Creating ALSA configuration for card $audio_card..."
-sudo tee /etc/asound.conf > /dev/null <<EOF
+# Step 5: Configure default audio device and verify
+# This function replaces the previous, less safe method.
+create_and_verify_asound_conf() {
+    print_step "Step 5: Configuring default audio device..."
+    local asound_conf="/etc/asound.conf"
+    local asound_conf_bak="/etc/asound.conf.bak.$(date +%s)"
+    
+    # Use our more robust detection function
+    local audio_card
+    audio_card=$(detect_audio_card)
+    
+    # Back up existing config just in case
+    if [ -f "$asound_conf" ]; then
+        print_status "Backing up existing ALSA config to $asound_conf_bak"
+        sudo mv "$asound_conf" "$asound_conf_bak"
+    fi
+    
+    # Create the new config
+    print_status "Creating new ALSA configuration for card $audio_card..."
+    sudo tee "$asound_conf" > /dev/null <<EOF
 pcm.!default {
     type hw
-    card $audio_card
+    card ${audio_card}
     device 0
 }
 
 ctl.!default {
     type hw
-    card $audio_card
+    card ${audio_card}
 }
 EOF
+
+    # VERIFY the new config. This is the crucial step.
+    print_status "Verifying new ALSA configuration with 'arecord -l'..."
+    if arecord -l > /dev/null 2>&1; then
+        print_status "✓ New ALSA configuration is valid."
+        sudo rm -f "$asound_conf_bak" # Clean up backup
+    else
+        print_error "ALSA VERIFICATION FAILED! The generated /etc/asound.conf is invalid for your hardware."
+        print_warning "This is the error you were seeing. The script will now self-correct."
+        
+        # Restore the backup or delete our broken file
+        if [ -f "$asound_conf_bak" ]; then
+            print_warning "Restoring original ALSA configuration from $asound_conf_bak"
+            sudo mv "$asound_conf_bak" "$asound_conf"
+        else
+            print_warning "Removing the invalid ALSA configuration file."
+            sudo rm -f "$asound_conf"
+        fi
+        
+        print_error "Audio setup failed. The 'dtoverlay' in your /boot/config.txt does not match your physical microphone."
+        print_error "Please fix the dtoverlay and reboot before running this script again."
+        exit 1
+    fi
+}
+
+# Call the new, safe function to configure audio
+create_and_verify_asound_conf
 
 # Step 6: Setup USB mounting
 print_step "Step 6: Setting up USB mounting..."
