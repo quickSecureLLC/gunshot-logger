@@ -89,6 +89,12 @@ class CircularBuffer:
 class GunshotLogger:
     def __init__(self):
         self.setup_logging()
+        
+        # Verify USB mount before starting
+        if not self.verify_usb_mount():
+            self.logger.error("USB drive not properly mounted. Please run ./mount_usb.sh or mount manually.")
+            raise RuntimeError("USB drive not mounted")
+        
         self.buffer = CircularBuffer(
             CONFIG['BUFFER_DURATION'],
             CONFIG['SAMPLE_RATE'],
@@ -172,6 +178,34 @@ class GunshotLogger:
                 json.dump({'file_counter': self.file_counter}, f)
         except Exception as e:
             self.rate_limited_log('error', f"Failed to save state: {e}", 'save_state')
+
+    def verify_usb_mount(self):
+        """Verify that USB drive is properly mounted and writable"""
+        try:
+            import subprocess
+            
+            # Check if mount point exists and is mounted
+            result = subprocess.run(['mountpoint', '-q', '/media/pi/gunshots'], 
+                                  capture_output=True, text=True)
+            if result.returncode != 0:
+                self.logger.error("USB drive is not mounted at /media/pi/gunshots")
+                return False
+            
+            # Check if directory is writable
+            test_file = Path('/media/pi/gunshots/.test_write')
+            try:
+                test_file.touch()
+                test_file.unlink()
+            except Exception as e:
+                self.logger.error(f"USB drive is not writable: {e}")
+                return False
+            
+            self.logger.info("USB drive is properly mounted and writable")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error verifying USB mount: {e}")
+            return False
 
     def find_usb_drive(self):
         """Find the USB drive mount point"""
