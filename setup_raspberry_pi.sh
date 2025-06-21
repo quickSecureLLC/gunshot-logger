@@ -11,6 +11,9 @@ set -u  # Exit on undefined variables
 trap 'echo "[ERROR] Script failed at line $LINENO. Check setup.log for details." >&2' ERR
 trap 'echo "[INFO] Setup interrupted by user." >&2' INT TERM
 
+# Canonical mount point - use consistent name everywhere
+MOUNT_POINT="/media/$(whoami)/gunshot-logger"
+
 # Setup logging
 exec 1> >(tee -a setup.log)
 exec 2> >(tee -a setup.log >&2)
@@ -204,26 +207,25 @@ setup_usb_mount() {
     
     # Get current user
     local current_user=$(get_current_user)
-    local mount_point="/media/$current_user/gunshots"
     
     print_status "Using user: $current_user"
-    print_status "Mount point: $mount_point"
+    print_status "Mount point: $MOUNT_POINT"
     
     # Create mount directory structure
-    sudo mkdir -p "$mount_point"
+    sudo mkdir -p "$MOUNT_POINT"
     if [ $? -ne 0 ]; then
-        print_error "Failed to create mount directory: $mount_point"
+        print_error "Failed to create mount directory: $MOUNT_POINT"
         return 1
     fi
     
     # Set ownership to current user
-    sudo chown "$current_user:$current_user" "$mount_point"
+    sudo chown "$current_user:$current_user" "$MOUNT_POINT"
     if [ $? -ne 0 ]; then
-        print_error "Failed to set ownership of $mount_point to $current_user"
+        print_error "Failed to set ownership of $MOUNT_POINT to $current_user"
         return 1
     fi
     
-    sudo chmod 755 "$mount_point"
+    sudo chmod 755 "$MOUNT_POINT"
     
     # Bulletproof USB mounting with retries
     print_status "Waiting for USB partition..."
@@ -266,13 +268,13 @@ setup_usb_mount() {
     local mount_opts="uid=$(id -u $current_user),gid=$(id -g $current_user),noatime"
     
     for attempt in 1 2 3; do
-        print_status "Mounting attempt $attempt: sudo mount -t $fstype -o $mount_opts $usb_dev $mount_point"
+        print_status "Mounting attempt $attempt: sudo mount -t $fstype -o $mount_opts $usb_dev $MOUNT_POINT"
         
-        if sudo mount -t "$fstype" -o "$mount_opts" "$usb_dev" "$mount_point"; then
-            print_status "✓ Mounted $usb_dev → $mount_point"
+        if sudo mount -t "$fstype" -o "$mount_opts" "$usb_dev" "$MOUNT_POINT"; then
+            print_status "✓ Mounted $usb_dev → $MOUNT_POINT"
             
             # Show mount info
-            df -h "$mount_point"
+            df -h "$MOUNT_POINT"
             return 0
         else
             print_warning "Mount failed, retrying in 2s... (attempt $attempt/3)"
@@ -282,13 +284,13 @@ setup_usb_mount() {
     
     # Final hardcoded fallback attempt
     print_warning "All mount attempts failed, trying final hardcoded fallback..."
-    if sudo mount -t vfat -o "uid=$(id -u $current_user),gid=$(id -g $current_user),noatime" "/dev/sda1" "$mount_point"; then
-        print_status "✓ Hardcoded fallback successful: /dev/sda1 → $mount_point"
-        df -h "$mount_point"
+    if sudo mount -t vfat -o "uid=$(id -u $current_user),gid=$(id -g $current_user),noatime" "/dev/sda1" "$MOUNT_POINT"; then
+        print_status "✓ Hardcoded fallback successful: /dev/sda1 → $MOUNT_POINT"
+        df -h "$MOUNT_POINT"
         return 0
     fi
     
-    print_error "Failed to mount $usb_dev at $mount_point after all attempts."
+    print_error "Failed to mount $usb_dev at $MOUNT_POINT after all attempts."
     print_error "Please check USB drive and try again."
     return 1
 }
@@ -296,19 +298,18 @@ setup_usb_mount() {
 # Function to verify USB mount
 verify_usb_mount() {
     local current_user=$(get_current_user)
-    local mount_point="/media/$current_user/gunshots"
     
-    if ! mountpoint -q "$mount_point"; then
-        print_error "USB drive is not mounted at $mount_point"
+    if ! mountpoint -q "$MOUNT_POINT"; then
+        print_error "USB drive is not mounted at $MOUNT_POINT"
         return 1
     fi
     
-    if [ ! -w "$mount_point" ]; then
+    if [ ! -w "$MOUNT_POINT" ]; then
         print_error "USB drive is not writable"
         return 1
     fi
     
-    print_status "USB drive is properly mounted and writable at $mount_point"
+    print_status "USB drive is properly mounted and writable at $MOUNT_POINT"
     return 0
 }
 
@@ -379,7 +380,6 @@ print_step "Step 8: Creating systemd service..."
 
 # Get current user for service configuration
 current_user=$(get_current_user)
-mount_point="/media/$current_user/gunshots"
 
 sudo tee /etc/systemd/system/gunshot-logger.service > /dev/null <<EOF
 [Unit]
@@ -391,8 +391,8 @@ Type=simple
 User=$current_user
 WorkingDirectory=/home/$current_user/gunshot-logger
 Environment="PYTHONUNBUFFERED=1"
-ExecStartPre=/bin/bash -c 'if [ ! -d "$mount_point" ]; then echo "Mount point does not exist"; exit 1; fi'
-ExecStartPre=/bin/bash -c 'if [ ! -w "$mount_point" ]; then echo "Mount point not writable"; exit 1; fi'
+ExecStartPre=/bin/bash -c 'if [ ! -d "$MOUNT_POINT" ]; then echo "Mount point does not exist"; exit 1; fi'
+ExecStartPre=/bin/bash -c 'if [ ! -w "$MOUNT_POINT" ]; then echo "Mount point not writable"; exit 1; fi'
 ExecStart=/usr/bin/python3 /home/$current_user/gunshot-logger/gunshot_logger.py
 Restart=always
 RestartSec=5
@@ -413,7 +413,6 @@ print_step "Step 10: Creating verification script..."
 
 # Get current user for verification script
 current_user=$(get_current_user)
-mount_point="/media/$current_user/gunshots"
 
 tee verify_setup.sh > /dev/null <<EOF
 #!/bin/bash
@@ -442,10 +441,10 @@ aplay -l
 
 echo ""
 echo "4. Checking USB drive mount..."
-if mountpoint -q "$mount_point"; then
+if mountpoint -q "$MOUNT_POINT"; then
     echo "✓ USB drive is mounted"
-    df -h "$mount_point"
-    ls -la "$mount_point/"
+    df -h "$MOUNT_POINT"
+    ls -la "$MOUNT_POINT/"
 else
     echo "✗ USB drive is not mounted"
     echo "Available USB devices:"
@@ -457,9 +456,9 @@ fi
 
 echo ""
 echo "5. Checking mount point permissions..."
-if [ -d "$mount_point" ]; then
+if [ -d "$MOUNT_POINT" ]; then
     echo "✓ Mount point exists"
-    ls -ld "$mount_point"
+    ls -ld "$MOUNT_POINT"
 else
     echo "✗ Mount point does not exist"
 fi
@@ -496,7 +495,6 @@ print_step "Step 11: Creating troubleshooting script..."
 
 # Get current user for troubleshooting script
 current_user=$(get_current_user)
-mount_point="/media/$current_user/gunshots"
 
 tee troubleshoot.sh > /dev/null <<EOF
 #!/bin/bash
@@ -553,7 +551,6 @@ print_step "Step 12: Creating USB mount helper..."
 
 # Get current user for mount helper
 current_user=$(get_current_user)
-mount_point="/media/$current_user/gunshots"
 
 tee mount_usb.sh > /dev/null <<EOF
 #!/bin/bash
@@ -563,9 +560,9 @@ echo "USB Drive Mount Helper"
 echo "=========================================="
 
 # Check if already mounted
-if mountpoint -q "$mount_point"; then
-    echo "✓ USB drive already mounted at $mount_point"
-    df -h "$mount_point"
+if mountpoint -q "$MOUNT_POINT"; then
+    echo "✓ USB drive already mounted at $MOUNT_POINT"
+    df -h "$MOUNT_POINT"
     exit 0
 fi
 
@@ -601,7 +598,7 @@ if [ -z "$usb_dev" ]; then
         echo ""
         echo "Manual mount options:"
         echo "1. Find your USB device: lsblk"
-        echo "2. Mount manually: sudo mount /dev/sda1 $mount_point"
+        echo "2. Mount manually: sudo mount /dev/sda1 $MOUNT_POINT"
         exit 1
     fi
 fi
@@ -616,11 +613,11 @@ echo "Filesystem type: $fstype"
 mount_opts="uid=$(id -u),gid=$(id -g),noatime"
 
 for attempt in 1 2 3; do
-    echo "Mounting attempt $attempt: sudo mount -t $fstype -o $mount_opts $usb_dev $mount_point"
+    echo "Mounting attempt $attempt: sudo mount -t $fstype -o $mount_opts $usb_dev $MOUNT_POINT"
     
-    if sudo mount -t "$fstype" -o "$mount_opts" "$usb_dev" "$mount_point"; then
-        echo "✓ Mounted $usb_dev → $mount_point"
-        df -h "$mount_point"
+    if sudo mount -t "$fstype" -o "$mount_opts" "$usb_dev" "$MOUNT_POINT"; then
+        echo "✓ Mounted $usb_dev → $MOUNT_POINT"
+        df -h "$MOUNT_POINT"
         exit 0
     else
         echo "Mount failed, retrying in 2s... (attempt $attempt/3)"
@@ -630,17 +627,17 @@ done
 
 # Final hardcoded fallback attempt
 echo "All mount attempts failed, trying final hardcoded fallback..."
-if sudo mount -t vfat -o "uid=$(id -u),gid=$(id -g),noatime" "/dev/sda1" "$mount_point"; then
-    echo "✓ Hardcoded fallback successful: /dev/sda1 → $mount_point"
-    df -h "$mount_point"
+if sudo mount -t vfat -o "uid=$(id -u),gid=$(id -g),noatime" "/dev/sda1" "$MOUNT_POINT"; then
+    echo "✓ Hardcoded fallback successful: /dev/sda1 → $MOUNT_POINT"
+    df -h "$MOUNT_POINT"
     exit 0
 fi
 
-echo "✗ Failed to mount $usb_dev at $mount_point after all attempts."
+echo "✗ Failed to mount $usb_dev at $MOUNT_POINT after all attempts."
 echo ""
 echo "Manual mount options:"
 echo "1. Find your USB device: lsblk"
-echo "2. Mount manually: sudo mount /dev/sda1 $mount_point"
+echo "2. Mount manually: sudo mount /dev/sda1 $MOUNT_POINT"
 exit 1
 EOF
 
@@ -657,22 +654,21 @@ echo "=========================================="
 
 # Get current user
 current_user=\$(whoami)
-mount_point="/media/\$current_user/gunshots"
 
 echo "User: \$current_user"
-echo "Mount point: \$mount_point"
+echo "Mount point: $MOUNT_POINT"
 
 # Create mount point
-sudo mkdir -p "\$mount_point"
-sudo chown "\$current_user:\$current_user" "\$mount_point"
+sudo mkdir -p "$MOUNT_POINT"
+sudo chown "\$current_user:\$current_user" "$MOUNT_POINT"
 
 echo ""
 echo "Attempting to mount /dev/sda1..."
 
 # Simple mount attempt
-if sudo mount -t vfat -o "uid=\$(id -u),gid=\$(id -g),noatime" "/dev/sda1" "\$mount_point"; then
-    echo "✓ Successfully mounted /dev/sda1 → \$mount_point"
-    df -h "\$mount_point"
+if sudo mount -t vfat -o "uid=\$(id -u),gid=\$(id -g),noatime" "/dev/sda1" "$MOUNT_POINT"; then
+    echo "✓ Successfully mounted /dev/sda1 → $MOUNT_POINT"
+    df -h "$MOUNT_POINT"
     echo ""
     echo "You can now run the setup script again."
 else
@@ -681,7 +677,7 @@ else
     echo "Troubleshooting:"
     echo "1. Check if USB is inserted: lsblk"
     echo "2. Check if device exists: ls -la /dev/sda*"
-    echo "3. Try different device: sudo mount /dev/sdb1 \$mount_point"
+    echo "3. Try different device: sudo mount /dev/sdb1 $MOUNT_POINT"
 fi
 EOF
 
@@ -724,7 +720,7 @@ echo "3. Monitor logs:"
 echo "   sudo journalctl -u gunshot-logger.service -f"
 echo ""
 echo "4. Test with loud sound and check:"
-echo "   ls -la /media/$current_user/gunshots/"
+echo "   ls -la $MOUNT_POINT/"
 echo ""
 echo "5. If issues, run troubleshooting:"
 echo "   ./troubleshoot.sh"
