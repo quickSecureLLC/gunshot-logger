@@ -403,6 +403,15 @@ fi
 retry git clone https://github.com/quickSecureLLC/gunshot-logger.git
 cd gunshot-logger
 
+print_step "Step 4.5: Patching Python script for dynamic mount point..."
+# Use sed to replace the hardcoded mount path logic with a command-line argument
+# This makes the script adaptable to our robust mounting setup.
+sed -i.bak \
+    -e "s|self.usb_path = self.find_usb_drive()|self.usb_path = Path(sys.argv[1]) if len(sys.argv) > 1 else self.find_usb_drive()|" \
+    -e "/'USB_MOUNT_PATH':/d" \
+    gunshot_logger.py
+print_status "gunshot_logger.py patched successfully."
+
 # Step 5: Configure audio system
 print_step "Step 5: Configuring audio system..."
 
@@ -456,7 +465,7 @@ WorkingDirectory=/home/$current_user/gunshot-logger
 Environment="PYTHONUNBUFFERED=1"
 ExecStartPre=/usr/bin/test -d "$MOUNT_POINT"
 ExecStartPre=/usr/bin/test -w "$MOUNT_POINT"
-ExecStart=/usr/bin/python3 /home/$current_user/gunshot-logger/gunshot_logger.py
+ExecStart=/usr/bin/python3 /home/$current_user/gunshot-logger/gunshot_logger.py "$MOUNT_POINT"
 Restart=always
 RestartSec=5
 StandardOutput=journal
