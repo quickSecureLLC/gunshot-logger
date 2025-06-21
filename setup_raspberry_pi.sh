@@ -353,7 +353,7 @@ setup_usb_mount() {
         return 0
     fi
     
-    print_error "✗ Failed to mount ${usb_dev:-/dev/sda1} at $MOUNT_POINT after all attempts."
+    print_error "✗ Failed to mount \${usb_dev:-/dev/sda1} at $MOUNT_POINT after all attempts."
     print_error "Please check USB drive and try again."
     return 1
 }
@@ -701,28 +701,28 @@ fi
 echo "Found USB device: $usb_dev"
 
 # Get filesystem type
-fstype=$(sudo blkid -s TYPE -o value "$usb_dev" 2>/dev/null || echo "vfat")
-echo "Filesystem type: $fstype"
+fstype=\$(sudo blkid -s TYPE -o value "\$usb_dev" 2>/dev/null || echo "vfat")
+echo "Filesystem type: \$fstype"
 
 # Try mounting with retries
-mount_opts="uid=$(id -u),gid=$(id -g),noatime"
+mount_opts="uid=\$(id -u),gid=\$(id -g),noatime"
 
 for attempt in 1 2 3; do
-    echo "Mounting attempt $attempt: sudo mount -t $fstype -o $mount_opts $usb_dev $MOUNT_POINT"
+    echo "Mounting attempt \$attempt: sudo mount -t \$fstype -o \$mount_opts \$usb_dev $MOUNT_POINT"
     
-    if sudo mount -t "$fstype" -o "$mount_opts" "$usb_dev" "$MOUNT_POINT"; then
-        echo "✓ Mounted $usb_dev → $MOUNT_POINT"
+    if sudo mount -t "\$fstype" -o "\$mount_opts" "\$usb_dev" "$MOUNT_POINT"; then
+        echo "✓ Mounted \$usb_dev → $MOUNT_POINT"
         df -h "$MOUNT_POINT"
         exit 0
     else
-        echo "Mount failed, retrying in 2s... (attempt $attempt/3)"
+        echo "Mount failed, retrying in 2s... (attempt \$attempt/3)"
         sleep 2
     fi
 done
 
 # Final hardcoded fallback attempt
 echo "All mount attempts failed, trying final hardcoded fallback..."
-if sudo mount -t vfat -o "uid=$(id -u),gid=$(id -g),noatime" "/dev/sda1" "$MOUNT_POINT"; then
+if sudo mount -t vfat -o "uid=\$(id -u),gid=\$(id -g),noatime" "/dev/sda1" "$MOUNT_POINT"; then
     echo "✓ Hardcoded fallback successful: /dev/sda1 → $MOUNT_POINT"
     df -h "$MOUNT_POINT"
     exit 0
