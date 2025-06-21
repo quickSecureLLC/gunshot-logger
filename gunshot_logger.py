@@ -29,10 +29,6 @@ CONFIG = {
     'CHANNELS': 2,
     'BUFFER_DURATION': 3,  # Increased to 3 seconds to capture more audio
     'DETECTION_THRESHOLD': -50,  # Much lower threshold for testing - was -15
-    'OPERATING_HOURS': {
-        'start': '09:00',
-        'end': '19:00'
-    },
     'GUNSHOT_DIR': 'gunshots',
     'STATE_FILE': 'gunshot_state.json',
     'LOG_FILE': 'gunshot_detection.log',
@@ -258,17 +254,6 @@ class GunshotLogger:
             self.rate_limited_log('error', f"Error calculating dB: {e}", 'calc_db')
             return -np.inf
 
-    def is_operating_hours(self):
-        """Check if current time is within operating hours"""
-        try:
-            now = datetime.datetime.now().time()
-            start = datetime.datetime.strptime(CONFIG['OPERATING_HOURS']['start'], '%H:%M').time()
-            end = datetime.datetime.strptime(CONFIG['OPERATING_HOURS']['end'], '%H:%M').time()
-            return start <= now <= end
-        except Exception as e:
-            self.rate_limited_log('error', f"Error checking operating hours: {e}", 'check_hours')
-            return True  # Default to running if there's an error
-
     def audio_callback(self, indata, frames, time_info, status):
         """Callback for audio stream processing"""
         if status:
@@ -303,10 +288,6 @@ class GunshotLogger:
                     min_level = min(self.audio_levels)
                     self.logger.info(f"Audio levels - Current: {db_level:.1f}dB, Avg: {avg_level:.1f}dB, Max: {max_level:.1f}dB, Min: {min_level:.1f}dB, Threshold: {CONFIG['DETECTION_THRESHOLD']}dB")
                 self.last_debug_time = current_time
-
-            # Only process detection during operating hours
-            if not self.is_operating_hours():
-                return
 
             # State machine for detection
             if self.detection_state == 'IDLE':
