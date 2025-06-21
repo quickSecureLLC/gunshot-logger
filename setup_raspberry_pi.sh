@@ -5,6 +5,11 @@
 # Enhanced with reliable USB mounting, dynamic device detection, and robust error handling
 
 set -e  # Exit on any error
+set -u  # Exit on undefined variables
+
+# Script hardening
+trap 'echo "[ERROR] Script failed at line $LINENO. Check setup.log for details." >&2' ERR
+trap 'echo "[INFO] Setup interrupted by user." >&2' INT TERM
 
 # Setup logging
 exec 1> >(tee -a setup.log)
@@ -13,7 +18,28 @@ exec 2> >(tee -a setup.log >&2)
 echo "=========================================="
 echo "Gunshot Logger - Raspberry Pi Setup"
 echo "Started at: $(date)"
+echo "Script version: $(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 echo "=========================================="
+
+# Validate environment
+if [ "$EUID" -eq 0 ]; then
+    echo "[ERROR] Do not run this script as root. Run as your normal user."
+    exit 1
+fi
+
+if ! command -v sudo >/dev/null 2>&1; then
+    echo "[ERROR] sudo is required but not installed."
+    exit 1
+fi
+
+# Test sudo access
+if ! sudo -n true 2>/dev/null; then
+    echo "[INFO] Testing sudo access..."
+    sudo true || {
+        echo "[ERROR] No sudo access. Please ensure your user has sudo privileges."
+        exit 1
+    }
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -38,6 +64,23 @@ print_error() {
 print_step() {
     echo -e "${BLUE}[STEP]${NC} $1"
 }
+
+# Cleanup function
+cleanup() {
+    local exit_code=$?
+    echo ""
+    if [ $exit_code -eq 0 ]; then
+        print_status "Setup completed successfully!"
+    else
+        print_error "Setup failed with exit code $exit_code"
+        print_error "Check setup.log for detailed error information"
+    fi
+    echo "Setup completed at: $(date)"
+    exit $exit_code
+}
+
+# Set cleanup trap
+trap cleanup EXIT
 
 # Retry function for unreliable operations
 retry() {
@@ -155,37 +198,55 @@ setup_usb_mount() {
     
     sudo chmod 755 "$mount_point"
     
-    # Detect USB partition directly
-    print_status "Detecting USB partition..."
-    # grab the first unmounted partition
-    local usb_dev=$(lsblk -pnro NAME,TYPE,MOUNTPOINT | awk '$2=="part" && $3=="" {print $1; exit}')
+    # Bulletproof USB mounting with retries
+    print_status "Waiting for USB partition..."
+    local usb_dev=""
+    
+    # Wait up to 10 seconds for USB device to appear
+    for i in {1..10}; do
+        # Look for any unmounted partition on /dev/sd*
+        usb_dev=$(lsblk -pnro NAME,TYPE,MOUNTPOINT \
+                  | awk '$2=="part" && $3=="" && $1 ~ /^\/dev\/sd/ {print $1; exit}')
+        if [ -n "$usb_dev" ]; then 
+            break
+        fi
+        print_status "Waiting for USB device... (attempt $i/10)"
+        sleep 1
+    done
+    
     if [ -z "$usb_dev" ]; then
-        print_error "No unmounted USB partition found!"
+        print_error "No USB partition found after waiting 10 seconds."
         print_error "Please insert a USB drive and try again."
         return 1
     fi
     
-    print_status "Will mount $usb_dev → $mount_point"
+    print_status "Detected USB partition: $usb_dev"
     
     # Get filesystem type
     local fstype=$(sudo blkid -s TYPE -o value "$usb_dev" 2>/dev/null || echo "vfat")
     print_status "Filesystem type: $fstype"
     
-    # mount it directly, with the right uid/gid
-    sudo mount -t "$fstype" \
-         -o uid=$(id -u $current_user),gid=$(id -g $current_user),defaults,noatime \
-         "$usb_dev" "$mount_point"
+    # Try mounting with retries
+    local mount_opts="uid=$(id -u $current_user),gid=$(id -g $current_user),noatime"
     
-    if [ $? -eq 0 ]; then
-        print_status "USB mounted successfully at $mount_point"
+    for attempt in 1 2 3; do
+        print_status "Mounting attempt $attempt: sudo mount -t $fstype -o $mount_opts $usb_dev $mount_point"
         
-        # Show mount info
-        df -h "$mount_point"
-        return 0
-    else
-        print_error "Direct mount failed for $usb_dev"
-        return 1
-    fi
+        if sudo mount -t "$fstype" -o "$mount_opts" "$usb_dev" "$mount_point"; then
+            print_status "✓ Mounted $usb_dev → $mount_point"
+            
+            # Show mount info
+            df -h "$mount_point"
+            return 0
+        else
+            print_warning "Mount failed, retrying in 2s... (attempt $attempt/3)"
+            sleep 2
+        fi
+    done
+    
+    print_error "Failed to mount $usb_dev at $mount_point after 3 attempts."
+    print_error "Please check USB drive and try again."
+    return 1
 }
 
 # Function to verify USB mount
@@ -215,8 +276,17 @@ retry sudo apt install -y python3 python3-pip git alsa-utils util-linux python3-
 print_step "Step 2: Installing additional Python packages..."
 retry pip3 install sounddevice --break-system-packages
 
-# Step 3: Clone repository
-print_step "Step 3: Cloning repository..."
+# Step 3: Kill existing service if running
+print_step "Step 3: Stopping existing service if running..."
+if sudo systemctl is-active --quiet gunshot-logger.service; then
+    print_status "Stopping existing gunshot-logger service..."
+    sudo systemctl stop gunshot-logger.service
+    sudo systemctl disable gunshot-logger.service
+    sleep 2
+fi
+
+# Step 4: Clone repository
+print_step "Step 4: Cloning repository..."
 cd ~
 if [ -d "gunshot-logger" ]; then
     print_warning "gunshot-logger directory already exists, removing..."
@@ -225,8 +295,8 @@ fi
 retry git clone https://github.com/quickSecureLLC/gunshot-logger.git
 cd gunshot-logger
 
-# Step 4: Configure audio system
-print_step "Step 4: Configuring audio system..."
+# Step 5: Configure audio system
+print_step "Step 5: Configuring audio system..."
 
 # Detect audio card dynamically
 audio_card=$(detect_audio_card)
@@ -246,22 +316,22 @@ ctl.!default {
 }
 EOF
 
-# Step 5: Setup USB mounting
-print_step "Step 5: Setting up USB mounting..."
+# Step 6: Setup USB mounting
+print_step "Step 6: Setting up USB mounting..."
 if ! setup_usb_mount; then
     print_warning "USB setup failed, continuing without USB mount"
     print_warning "You will need to manually mount USB drive later"
 fi
 
-# Step 6: Test audio system
-print_step "Step 6: Testing audio system..."
+# Step 7: Test audio system
+print_step "Step 7: Testing audio system..."
 if ! python3 test_audio.py; then
     print_error "Audio test failed"
     exit 1
 fi
 
-# Step 7: Create systemd service with pre-checks
-print_step "Step 7: Creating systemd service..."
+# Step 8: Create systemd service with pre-checks
+print_step "Step 8: Creating systemd service..."
 
 # Get current user for service configuration
 current_user=$(get_current_user)
@@ -289,13 +359,13 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-# Step 8: Enable and start service
-print_step "Step 8: Enabling and starting service..."
+# Step 9: Enable and start service
+print_step "Step 9: Enabling and starting service..."
 sudo systemctl daemon-reload
 sudo systemctl enable gunshot-logger.service
 
-# Step 9: Create enhanced verification script
-print_step "Step 9: Creating verification script..."
+# Step 10: Create enhanced verification script
+print_step "Step 10: Creating verification script..."
 
 # Get current user for verification script
 current_user=$(get_current_user)
@@ -377,8 +447,8 @@ EOF
 
 chmod +x verify_setup.sh
 
-# Step 10: Create enhanced troubleshooting script
-print_step "Step 10: Creating troubleshooting script..."
+# Step 11: Create enhanced troubleshooting script
+print_step "Step 11: Creating troubleshooting script..."
 
 # Get current user for troubleshooting script
 current_user=$(get_current_user)
@@ -434,8 +504,8 @@ EOF
 
 chmod +x troubleshoot.sh
 
-# Step 11: Create USB mount helper script
-print_step "Step 11: Creating USB mount helper..."
+# Step 12: Create USB mount helper script
+print_step "Step 12: Creating USB mount helper..."
 
 # Get current user for mount helper
 current_user=$(get_current_user)
@@ -448,12 +518,6 @@ echo "=========================================="
 echo "USB Drive Mount Helper"
 echo "=========================================="
 
-echo "Available USB devices:"
-lsblk | grep -E "(sda|sdb|sdc)"
-
-echo ""
-echo "Attempting to mount USB drive..."
-
 # Check if already mounted
 if mountpoint -q "$mount_point"; then
     echo "✓ USB drive already mounted at $mount_point"
@@ -461,11 +525,27 @@ if mountpoint -q "$mount_point"; then
     exit 0
 fi
 
-# Find unmounted USB partition
-usb_dev=$(lsblk -pnro NAME,TYPE,MOUNTPOINT | awk '$2=="part" && $3=="" {print $1; exit}')
+echo "Available USB devices:"
+lsblk | grep -E "(sda|sdb|sdc)"
+
+echo ""
+echo "Waiting for USB partition..."
+
+# Wait up to 10 seconds for USB device to appear
+usb_dev=""
+for i in {1..10}; do
+    # Look for any unmounted partition on /dev/sd*
+    usb_dev=$(lsblk -pnro NAME,TYPE,MOUNTPOINT \
+               | awk '$2=="part" && $3=="" && $1 ~ /^\/dev\/sd/ {print $1; exit}')
+    if [ -n "$usb_dev" ]; then 
+        break
+    fi
+    echo "Waiting for USB device... (attempt $i/10)"
+    sleep 1
+done
 
 if [ -z "$usb_dev" ]; then
-    echo "✗ No unmounted USB partition found"
+    echo "✗ No USB partition found after waiting 10 seconds."
     echo ""
     echo "Manual mount options:"
     echo "1. Find your USB device: lsblk"
@@ -479,23 +559,34 @@ echo "Found USB device: $usb_dev"
 fstype=$(sudo blkid -s TYPE -o value "$usb_dev" 2>/dev/null || echo "vfat")
 echo "Filesystem type: $fstype"
 
-# Mount directly
-if sudo mount -t "$fstype" -o uid=$(id -u),gid=$(id -g),defaults,noatime "$usb_dev" "$mount_point"; then
-    echo "✓ USB drive mounted successfully at $mount_point"
-    df -h "$mount_point"
-else
-    echo "✗ Failed to mount USB drive"
-    echo ""
-    echo "Manual mount options:"
-    echo "1. Find your USB device: lsblk"
-    echo "2. Mount manually: sudo mount /dev/sda1 $mount_point"
-fi
+# Try mounting with retries
+mount_opts="uid=$(id -u),gid=$(id -g),noatime"
+
+for attempt in 1 2 3; do
+    echo "Mounting attempt $attempt: sudo mount -t $fstype -o $mount_opts $usb_dev $mount_point"
+    
+    if sudo mount -t "$fstype" -o "$mount_opts" "$usb_dev" "$mount_point"; then
+        echo "✓ Mounted $usb_dev → $mount_point"
+        df -h "$mount_point"
+        exit 0
+    else
+        echo "Mount failed, retrying in 2s... (attempt $attempt/3)"
+        sleep 2
+    fi
+done
+
+echo "✗ Failed to mount $usb_dev at $mount_point after 3 attempts."
+echo ""
+echo "Manual mount options:"
+echo "1. Find your USB device: lsblk"
+echo "2. Mount manually: sudo mount /dev/sda1 $mount_point"
+exit 1
 EOF
 
 chmod +x mount_usb.sh
 
-# Step 12: Final verification and start
-print_step "Step 12: Final verification and service start..."
+# Step 13: Final verification and start
+print_step "Step 13: Final verification and service start..."
 
 # Verify USB mount before starting service
 if verify_usb_mount; then
