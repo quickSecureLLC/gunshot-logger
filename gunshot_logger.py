@@ -28,7 +28,7 @@ CONFIG = {
     'SAMPLE_RATE': 48000,
     'CHANNELS': 2,
     'BUFFER_DURATION': 3,  # Increased to 3 seconds to capture more audio
-    'DETECTION_THRESHOLD': -50,  # Much lower threshold for testing - was -15
+    'DETECTION_THRESHOLD': -20,  # Raised threshold to avoid false positives (was -50)
     'GUNSHOT_DIR': 'gunshots',
     'STATE_FILE': 'gunshot_state.json',
     'LOG_FILE': 'gunshot_detection.log',
