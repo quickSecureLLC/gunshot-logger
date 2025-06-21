@@ -201,6 +201,39 @@ detect_audio_card() {
     fi
 }
 
+# Function to cleanup USB mounts
+cleanup_usb_mounts() {
+    print_status "Cleaning up USB mounts..."
+    
+    # Unmount our specific mount point if it exists
+    if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
+        print_status "Unmounting existing mount at $MOUNT_POINT..."
+        sudo umount "$MOUNT_POINT" 2>/dev/null || true
+        sleep 1
+    fi
+    
+    # Unmount any USB drives that might be mounted elsewhere
+    local usb_mounts=$(mount | grep -E "(sda|sdb|sdc)" | awk '{print $3}' || true)
+    if [ -n "$usb_mounts" ]; then
+        print_warning "Found existing USB mounts, unmounting them..."
+        echo "$usb_mounts" | while read mount_point; do
+            if [ -n "$mount_point" ] && [ "$mount_point" != "$MOUNT_POINT" ]; then
+                print_status "Unmounting $mount_point..."
+                sudo umount "$mount_point" 2>/dev/null || true
+            fi
+        done
+        sleep 2
+    fi
+    
+    # Remove any stale mount points
+    if [ -d "$MOUNT_POINT" ]; then
+        print_status "Removing stale mount point directory..."
+        sudo rmdir "$MOUNT_POINT" 2>/dev/null || true
+    fi
+    
+    print_status "USB cleanup complete"
+}
+
 # Function to setup USB mounting
 setup_usb_mount() {
     print_step "Setting up reliable USB mounting..."
@@ -210,6 +243,36 @@ setup_usb_mount() {
     
     print_status "Using user: $current_user"
     print_status "Mount point: $MOUNT_POINT"
+    
+    # Bulletproof cleanup: Unmount any existing USB mounts
+    print_status "Cleaning up any existing USB mounts..."
+    
+    # Unmount our specific mount point if it exists
+    if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
+        print_status "Unmounting existing mount at $MOUNT_POINT..."
+        sudo umount "$MOUNT_POINT" 2>/dev/null || true
+        sleep 1
+    fi
+    
+    # Unmount any USB drives that might be mounted elsewhere
+    print_status "Checking for other USB mounts..."
+    local usb_mounts=$(mount | grep -E "(sda|sdb|sdc)" | awk '{print $3}' || true)
+    if [ -n "$usb_mounts" ]; then
+        print_warning "Found existing USB mounts, unmounting them..."
+        echo "$usb_mounts" | while read mount_point; do
+            if [ -n "$mount_point" ] && [ "$mount_point" != "$MOUNT_POINT" ]; then
+                print_status "Unmounting $mount_point..."
+                sudo umount "$mount_point" 2>/dev/null || true
+            fi
+        done
+        sleep 2
+    fi
+    
+    # Remove any stale mount points
+    if [ -d "$MOUNT_POINT" ]; then
+        print_status "Removing stale mount point directory..."
+        sudo rmdir "$MOUNT_POINT" 2>/dev/null || true
+    fi
     
     # Create mount directory structure
     sudo mkdir -p "$MOUNT_POINT"
@@ -428,7 +491,7 @@ if sudo systemctl is-active --quiet gunshot-logger.service; then
     sudo systemctl status gunshot-logger.service --no-pager -l
 else
     echo "✗ Service is not running"
-    sudo systemctl status gunshot-logger.service --no-pager -l
+    sudo systemctl status gunshot-logger.service --no-pager
 fi
 
 echo ""
@@ -566,6 +629,38 @@ if mountpoint -q "$MOUNT_POINT"; then
     exit 0
 fi
 
+# Clean up any existing USB mounts first
+echo "Cleaning up any existing USB mounts..."
+
+# Unmount our specific mount point if it exists
+if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
+    echo "Unmounting existing mount at $MOUNT_POINT..."
+    sudo umount "$MOUNT_POINT" 2>/dev/null || true
+    sleep 1
+fi
+
+# Unmount any USB drives that might be mounted elsewhere
+usb_mounts=\$(mount | grep -E "(sda|sdb|sdc)" | awk '{print \$3}' || true)
+if [ -n "\$usb_mounts" ]; then
+    echo "Found existing USB mounts, unmounting them..."
+    echo "\$usb_mounts" | while read mount_point; do
+        if [ -n "\$mount_point" ] && [ "\$mount_point" != "$MOUNT_POINT" ]; then
+            echo "Unmounting \$mount_point..."
+            sudo umount "\$mount_point" 2>/dev/null || true
+        fi
+    done
+    sleep 2
+fi
+
+# Remove any stale mount points
+if [ -d "$MOUNT_POINT" ]; then
+    echo "Removing stale mount point directory..."
+    sudo rmdir "$MOUNT_POINT" 2>/dev/null || true
+fi
+
+echo "USB cleanup complete"
+echo ""
+
 echo "Available USB devices:"
 lsblk | grep -E "(sda|sdb|sdc)"
 
@@ -683,6 +778,52 @@ EOF
 
 chmod +x manual_mount.sh
 
+# Step 13.5: Create standalone USB cleanup script
+print_step "Step 13.5: Creating standalone USB cleanup script..."
+tee cleanup_usb.sh > /dev/null <<EOF
+#!/bin/bash
+
+echo "=========================================="
+echo "USB Drive Cleanup Script"
+echo "=========================================="
+
+echo "This script will unmount all USB drives and clean up mount points."
+echo "Mount point: $MOUNT_POINT"
+echo ""
+
+# Unmount our specific mount point if it exists
+if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
+    echo "Unmounting existing mount at $MOUNT_POINT..."
+    sudo umount "$MOUNT_POINT" 2>/dev/null || true
+    sleep 1
+fi
+
+# Unmount any USB drives that might be mounted elsewhere
+usb_mounts=\$(mount | grep -E "(sda|sdb|sdc)" | awk '{print \$3}' || true)
+if [ -n "\$usb_mounts" ]; then
+    echo "Found existing USB mounts, unmounting them..."
+    echo "\$usb_mounts" | while read mount_point; do
+        if [ -n "\$mount_point" ] && [ "\$mount_point" != "$MOUNT_POINT" ]; then
+            echo "Unmounting \$mount_point..."
+            sudo umount "\$mount_point" 2>/dev/null || true
+        fi
+    done
+    sleep 2
+fi
+
+# Remove any stale mount points
+if [ -d "$MOUNT_POINT" ]; then
+    echo "Removing stale mount point directory..."
+    sudo rmdir "$MOUNT_POINT" 2>/dev/null || true
+fi
+
+echo ""
+echo "USB cleanup complete!"
+echo "You can now safely remove USB drives or run the setup script again."
+EOF
+
+chmod +x cleanup_usb.sh
+
 # Step 14: Final verification and start
 print_step "Step 14: Final verification and service start..."
 
@@ -716,13 +857,16 @@ echo "2. If USB not mounted, try these in order:"
 echo "   ./mount_usb.sh"
 echo "   ./manual_mount.sh"
 echo ""
-echo "3. Monitor logs:"
+echo "3. If you need to clean up USB mounts (for multiple runs):"
+echo "   ./cleanup_usb.sh"
+echo ""
+echo "4. Monitor logs:"
 echo "   sudo journalctl -u gunshot-logger.service -f"
 echo ""
-echo "4. Test with loud sound and check:"
+echo "5. Test with loud sound and check:"
 echo "   ls -la $MOUNT_POINT/"
 echo ""
-echo "5. If issues, run troubleshooting:"
+echo "6. If issues, run troubleshooting:"
 echo "   ./troubleshoot.sh"
 echo ""
 echo "=========================================="
