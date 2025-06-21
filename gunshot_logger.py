@@ -27,7 +27,7 @@ import psutil
 CONFIG = {
     'SAMPLE_RATE': 48000,
     'CHANNELS': 2,
-    'BUFFER_DURATION': 2,  # seconds
+    'BUFFER_DURATION': 3,  # Increased to 3 seconds to capture more audio
     'DETECTION_THRESHOLD': -15,  # dBFS; adjust after field test
     'OPERATING_HOURS': {
         'start': '09:00',
@@ -43,6 +43,7 @@ CONFIG = {
     'MAX_QUEUE_SIZE': 100,  # Maximum number of detections to queue
     'ERROR_COOLDOWN': 60,  # Seconds to wait between repeated error messages
     'BLOCKS_PER_BUFFER': 4,  # Number of blocks to buffer
+    'CAPTURE_DELAY': 0.5,  # Delay after trigger to capture gunshot (seconds)
 }
 
 class CircularBuffer:
@@ -52,29 +53,35 @@ class CircularBuffer:
         self.data = np.zeros(self.size, dtype=np.float32)
         self.index = 0
         self.is_full = False
+        self.total_samples_written = 0
 
     def write(self, data):
         try:
             data_len = len(data)
-            if self.index + data_len <= self.size:
-                self.data[self.index:self.index + data_len] = data
-            else:
-                first_part = self.size - self.index
-                second_part = data_len - first_part
-                self.data[self.index:] = data[:first_part]
-                self.data[:second_part] = data[first_part:]
+            if data_len == 0:
+                return
+                
+            # Write data to circular buffer
+            for i in range(data_len):
+                self.data[self.index] = data[i]
+                self.index = (self.index + 1) % self.size
+                if self.index == 0:
+                    self.is_full = True
             
-            self.index = (self.index + data_len) % self.size
-            if self.index == 0:
-                self.is_full = True
+            self.total_samples_written += data_len
+            
         except Exception as e:
             logging.error(f"Error writing to circular buffer: {e}")
 
     def get_buffer(self):
         try:
             if not self.is_full:
-                return self.data[:self.index]
-            return np.roll(self.data, -self.index)
+                # Buffer not full yet, return what we have
+                return self.data[:self.index].copy()
+            else:
+                # Buffer is full, return the most recent data
+                # Roll the data so the most recent samples are at the end
+                return np.roll(self.data, -self.index).copy()
         except Exception as e:
             logging.error(f"Error getting buffer data: {e}")
             return np.zeros(1, dtype=np.float32)
@@ -87,6 +94,14 @@ class GunshotLogger:
             CONFIG['SAMPLE_RATE'],
             CONFIG['CHANNELS']
         )
+        
+        # Log buffer configuration
+        self.logger.info(
+            f"Circular buffer initialized: duration={CONFIG['BUFFER_DURATION']}s, "
+            f"sample_rate={CONFIG['SAMPLE_RATE']}, channels={CONFIG['CHANNELS']}, "
+            f"buffer_size={self.buffer.size} samples"
+        )
+        
         self.file_counter = self.load_state()
         self.detection_queue = queue.Queue(maxsize=CONFIG['MAX_QUEUE_SIZE'])
         self.running = False
@@ -229,16 +244,53 @@ class GunshotLogger:
                     self.logger.info(f"Gunshot detected at {db_level:.1f} dB")
             
             elif self.detection_state == 'TRIGGERED':
-                if time.time() - self.trigger_time >= 2.0:  # 2 seconds post-trigger
+                # Wait for the configured delay after trigger to capture the full gunshot sound
+                # This ensures we get the initial impact and the reverberation
+                if time.time() - self.trigger_time >= CONFIG['CAPTURE_DELAY']:
                     try:
+                        # Get the buffer data which should contain the gunshot
+                        buffer_data = self.buffer.get_buffer().copy()
+                        buffer_rms = np.sqrt(np.mean(np.square(buffer_data)))
+                        buffer_db = 20 * np.log10(buffer_rms + 1e-10)
+                        
+                        self.logger.info(
+                            f"Capturing gunshot audio, buffer size: {len(buffer_data)}, "
+                            f"buffer RMS: {buffer_rms:.6f}, buffer dB: {buffer_db:.1f}"
+                        )
+                        
                         # Use non-blocking put with timeout
-                        self.detection_queue.put_nowait((db_level, self.buffer.get_buffer().copy()))
+                        self.detection_queue.put_nowait((db_level, buffer_data))
                     except queue.Full:
                         self.rate_limited_log('warning', "Detection queue full, skipping detection", 'queue_full')
                     self.detection_state = 'IDLE'
                     
         except Exception as e:
             self.rate_limited_log('error', f"Error in audio callback: {e}", 'audio_callback')
+
+    def validate_audio_data(self, audio_data):
+        """Validate that audio data contains actual sound"""
+        try:
+            if len(audio_data) == 0:
+                return False, "Empty audio data"
+            
+            # Check if audio is all zeros (silent)
+            if np.all(audio_data == 0):
+                return False, "Audio data is all zeros (silent)"
+            
+            # Check RMS level
+            rms = np.sqrt(np.mean(np.square(audio_data)))
+            if rms < 1e-6:  # Very low RMS indicates essentially silent audio
+                return False, f"Audio RMS too low: {rms:.8f}"
+            
+            # Check dynamic range
+            max_amp = np.max(np.abs(audio_data))
+            if max_amp < 1e-4:  # Very low amplitude
+                return False, f"Audio amplitude too low: {max_amp:.8f}"
+            
+            return True, f"Valid audio - RMS: {rms:.6f}, Max: {max_amp:.6f}"
+            
+        except Exception as e:
+            return False, f"Error validating audio: {e}"
 
     def save_gunshot(self, audio_data, db_level):
         """Save detected gunshot to file"""
@@ -247,21 +299,40 @@ class GunshotLogger:
             return
 
         try:
+            # Validate audio data first
+            is_valid, validation_msg = self.validate_audio_data(audio_data)
+            if not is_valid:
+                self.rate_limited_log('error', f"Invalid audio data: {validation_msg}", 'invalid_audio')
+                return
+
             gunshot_dir = self.usb_path / CONFIG['GUNSHOT_DIR']
             gunshot_dir.mkdir(exist_ok=True)
 
             filename = f"gunshot_{self.file_counter:03d}.wav"
             filepath = gunshot_dir / filename
 
-            # Reshape audio data for stereo and convert to int32
-            audio_data = audio_data.reshape(-1, CONFIG['CHANNELS']).astype(np.int32)
+            # Reshape audio data for stereo
+            if CONFIG['CHANNELS'] == 2:
+                # Ensure we have an even number of samples for stereo
+                if len(audio_data) % 2 != 0:
+                    audio_data = audio_data[:-1]  # Remove last sample if odd
+                audio_data = audio_data.reshape(-1, 2)
+            else:
+                audio_data = audio_data.reshape(-1, 1)
+
+            # Convert from float32 (-1.0 to 1.0) to int16 (-32768 to 32767)
+            # Apply proper scaling and clipping
+            audio_data = np.clip(audio_data, -1.0, 1.0)
+            audio_data = (audio_data * 32767).astype(np.int16)
             
             # Save as WAV file
             wavfile.write(str(filepath), CONFIG['SAMPLE_RATE'], audio_data)
             
-            # Log detection
+            # Log detection with additional info
             self.logger.info(
-                f"gunshot_{self.file_counter:03d} saved with decibel reading of {db_level:.1f} dB"
+                f"gunshot_{self.file_counter:03d} saved with decibel reading of {db_level:.1f} dB, "
+                f"audio shape: {audio_data.shape}, max amplitude: {np.max(np.abs(audio_data))}, "
+                f"validation: {validation_msg}"
             )
             
             self.file_counter += 1
@@ -281,10 +352,47 @@ class GunshotLogger:
             except Exception as e:
                 self.rate_limited_log('error', f"Detection worker error: {e}", 'worker_error')
 
+    def test_audio_capture(self):
+        """Test method to verify audio capture is working"""
+        try:
+            # Generate a test tone (1kHz sine wave)
+            duration = 1.0  # 1 second
+            samples = int(duration * CONFIG['SAMPLE_RATE'])
+            t = np.linspace(0, duration, samples, False)
+            test_tone = 0.1 * np.sin(2 * np.pi * 1000 * t)  # 1kHz at 10% amplitude
+            
+            if CONFIG['CHANNELS'] == 2:
+                test_tone = np.column_stack([test_tone, test_tone])
+            
+            # Write to buffer
+            self.buffer.write(test_tone.flatten())
+            
+            # Get buffer data
+            buffer_data = self.buffer.get_buffer()
+            
+            # Validate
+            is_valid, validation_msg = self.validate_audio_data(buffer_data)
+            
+            self.logger.info(f"Audio capture test: {validation_msg}")
+            self.logger.info(f"Test buffer size: {len(buffer_data)}")
+            
+            return is_valid
+            
+        except Exception as e:
+            self.logger.error(f"Audio capture test failed: {e}")
+            return False
+
     def start(self):
         """Start the gunshot logger"""
         try:
             self.running = True
+            
+            # Run audio capture test
+            self.logger.info("Running audio capture test...")
+            if self.test_audio_capture():
+                self.logger.info("Audio capture test passed")
+            else:
+                self.logger.warning("Audio capture test failed - check audio configuration")
             
             # Start detection worker thread
             self.worker_thread = threading.Thread(target=self.detection_worker)
