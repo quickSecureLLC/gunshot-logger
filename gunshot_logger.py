@@ -457,9 +457,8 @@ class GunshotLogger:
             sd.default.blocksize = CONFIG['BUFFER_SIZE']
             sd.default.latency = ('high', 'high')  # High latency for both input and output
             
-            # Start audio stream with improved parameters
+            # Start audio stream with improved parameters - use default device
             with sd.InputStream(
-                device=CONFIG['ALSA_DEVICE'],
                 channels=CONFIG['CHANNELS'],
                 samplerate=CONFIG['SAMPLE_RATE'],
                 blocksize=CONFIG['BUFFER_SIZE'],
