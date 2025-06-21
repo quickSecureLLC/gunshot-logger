@@ -21,19 +21,29 @@ echo "Started at: $(date)"
 echo "Script version: $(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 echo "=========================================="
 
+echo "[INFO] This script can be run as:"
+echo "  - Normal user: ./setup_raspberry_pi.sh"
+echo "  - With sudo: sudo ./setup_raspberry_pi.sh"
+echo "  - As root: ./setup_raspberry_pi.sh (if already root)"
+echo ""
+
 # Validate environment
-if [ "$EUID" -eq 0 ]; then
-    echo "[ERROR] Do not run this script as root. Run as your normal user."
+if [ "$EUID" -eq 0 ] && [ "$SUDO_USER" = "" ]; then
+    echo "[ERROR] Do not run this script directly as root. Run as your normal user."
+    echo "[INFO] Usage: ./setup_raspberry_pi.sh (not sudo ./setup_raspberry_pi.sh)"
     exit 1
 fi
+
+# Get the actual user (works whether run as root via sudo or as normal user)
+ACTUAL_USER=${SUDO_USER:-$USER}
 
 if ! command -v sudo >/dev/null 2>&1; then
     echo "[ERROR] sudo is required but not installed."
     exit 1
 fi
 
-# Test sudo access
-if ! sudo -n true 2>/dev/null; then
+# Test sudo access (only if not already root)
+if [ "$EUID" -ne 0 ]; then
     echo "[INFO] Testing sudo access..."
     sudo true || {
         echo "[ERROR] No sudo access. Please ensure your user has sudo privileges."
@@ -109,14 +119,31 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Function to run commands with sudo (handles both root and normal user)
+run_sudo() {
+    if [ "$EUID" -eq 0 ]; then
+        # Already root, run command directly
+        "$@"
+    else
+        # Not root, use sudo
+        sudo "$@"
+    fi
+}
+
 # Function to detect current user
 get_current_user() {
-    local user=$(whoami)
-    if [ -z "$user" ]; then
-        print_error "Could not determine current user"
-        exit 1
+    # Use the actual user we detected at script start
+    if [ -n "$ACTUAL_USER" ]; then
+        echo "$ACTUAL_USER"
+    else
+        # Fallback to whoami
+        local user=$(whoami)
+        if [ -z "$user" ]; then
+            print_error "Could not determine current user"
+            exit 1
+        fi
+        echo "$user"
     fi
-    echo "$user"
 }
 
 # Function to detect USB drive
