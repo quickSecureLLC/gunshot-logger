@@ -234,6 +234,23 @@ cleanup_usb_mounts() {
     print_status "USB cleanup complete"
 }
 
+# Function to ensure I2S audio overlay is enabled in boot config
+ensure_i2s_overlay() {
+    print_step "Ensuring I2S audio interface is enabled..."
+    local config_file="/boot/config.txt"
+    local overlay_line="dtoverlay=googlevoicehat-soundcard"
+
+    if ! sudo grep -q "^${overlay_line}" "$config_file"; then
+        print_warning "I2S overlay not found in $config_file."
+        print_status "Adding '$overlay_line' to $config_file..."
+        echo -e "\n# Enable Google Voice HAT I2S microphone\n${overlay_line}\n" | sudo tee -a "$config_file" > /dev/null
+        print_warning "A reboot is REQUIRED for this change to take effect."
+        REBOOT_REQUIRED=true
+    else
+        print_status "I2S overlay is already configured."
+    fi
+}
+
 # Function to setup USB mounting
 setup_usb_mount() {
     print_step "Setting up reliable USB mounting..."
@@ -409,14 +426,18 @@ fi
 retry git clone https://github.com/quickSecureLLC/gunshot-logger.git
 cd gunshot-logger
 
-print_step "Step 4.5: Patching Python script for dynamic mount point..."
-# Use sed to replace the hardcoded mount path logic with a command-line argument
-# This makes the script adaptable to our robust mounting setup.
+# Ensure the I2S hardware overlay is configured before proceeding
+ensure_i2s_overlay
+
+print_step "Step 4.5: Patching Python script for robust audio and mount point handling..."
+# Use sed to replace hardcoded values with more robust logic
 sed -i.bak \
     -e "s|self.usb_path = self.find_usb_drive()|self.usb_path = Path(sys.argv[1]) if len(sys.argv) > 1 else self.find_usb_drive()|" \
     -e "/'USB_MOUNT_PATH':/d" \
+    -e "/'ALSA_DEVICE':/d" \
+    -e "/device=CONFIG\['ALSA_DEVICE'\]/d" \
     gunshot_logger.py
-print_status "gunshot_logger.py patched successfully."
+print_status "gunshot_logger.py patched successfully for dynamic paths and default audio device."
 
 # Step 5: Configure audio system
 print_step "Step 5: Configuring audio system..."
@@ -447,11 +468,19 @@ if ! setup_usb_mount; then
 fi
 
 # Step 7: Test audio system
-print_step "Step 7: Testing audio system..."
+print_step "Step 7: Verifying audio system components..."
 if ! python3 test_audio.py; then
-    print_error "Audio test failed"
+    print_error "Audio component test (saving/buffering) failed."
     exit 1
 fi
+
+print_status "Probing hardware with Python sounddevice..."
+if ! python3 -c "import sounddevice as sd; print(sd.query_devices())"; then
+    print_error "Failed to query audio devices via Python. PortAudio or ALSA may be misconfigured."
+    print_error "A REBOOT IS LIKELY REQUIRED to activate hardware changes."
+    exit 1
+fi
+print_status "Audio hardware probed successfully."
 
 # Step 8: Create systemd service with pre-checks
 print_step "Step 8: Creating systemd service..."
