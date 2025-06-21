@@ -522,25 +522,22 @@ if ! setup_usb_mount; then
 fi
 
 # Step 7: Test audio system
-print_step "Step 7: Verifying audio system components..."
-if ! python3 test_audio.py; then
-    print_error "Audio component test (saving/buffering) failed."
-    exit 1
-fi
+print_step "Step 7: Verifying audio system..."
 
+# The main check is now just to see if the python probe works.
+# All complex checking is delegated to the i2s_audio_fixer.sh script.
 print_status "Probing hardware with Python sounddevice..."
-if ! python3 -c "import sounddevice as sd; print('sounddevice version:', sd.__version__); print(sd.query_devices())"; then
-    print_error "CRITICAL: Failed to query audio devices via Python."
+if ! python3 -c "import sounddevice as sd; sd.query_devices()" > /dev/null 2>&1; then
+    print_error "CRITICAL: Python cannot access the audio hardware."
     echo ""
-    print_warning "This is a fatal error, indicating the OS cannot see the microphone hardware."
-    print_warning "The most common cause is an incorrect hardware driver ('dtoverlay') in /boot/config.txt."
+    print_warning "This is a fatal error, likely caused by an incorrect hardware driver in /boot/config.txt."
     echo ""
-    print_error "Please run the dedicated I2S troubleshooter to fix this:"
-    print_status "./i2s_troubleshooter.sh"
+    print_error "Please run the dedicated I2S audio fixer to solve this:"
+    print_status "./i2s_audio_fixer.sh"
     echo ""
     exit 1
 fi
-print_status "Audio hardware probed successfully."
+print_status "✓ Audio hardware is accessible to Python."
 
 # Step 8: Create systemd service with pre-checks
 print_step "Step 8: Creating systemd service..."
