@@ -28,7 +28,7 @@ CONFIG = {
     'SAMPLE_RATE': 48000,
     'CHANNELS': 2,
     'BUFFER_DURATION': 3,  # Increased to 3 seconds to capture more audio
-    'DETECTION_THRESHOLD': -15,  # dBFS; adjust after field test
+    'DETECTION_THRESHOLD': -50,  # Much lower threshold for testing - was -15
     'OPERATING_HOURS': {
         'start': '09:00',
         'end': '19:00'
@@ -42,6 +42,7 @@ CONFIG = {
     'ERROR_COOLDOWN': 60,  # Seconds to wait between repeated error messages
     'BLOCKS_PER_BUFFER': 4,  # Number of blocks to buffer
     'CAPTURE_DELAY': 0.5,  # Delay after trigger to capture gunshot (seconds)
+    'DEBUG_INTERVAL': 5,  # How often to log audio levels (seconds)
 }
 
 class CircularBuffer:
@@ -123,6 +124,8 @@ class GunshotLogger:
         self.trigger_time = None
         self.last_error_time = 0
         self.error_counts = {}
+        self.last_debug_time = 0
+        self.audio_levels = []  # Store recent audio levels for debugging
         
     def setup_logging(self):
         """Configure logging to both file and stdout"""
@@ -283,19 +286,34 @@ class GunshotLogger:
             # Use a copy to prevent any potential buffer overruns
             self.buffer.write(indata.copy().flatten())
 
+            # Calculate dB level for this chunk
+            db_level = self.calculate_db(indata)
+            
+            # Store audio level for debugging
+            self.audio_levels.append(db_level)
+            if len(self.audio_levels) > 100:  # Keep last 100 readings
+                self.audio_levels.pop(0)
+            
+            # Debug logging every few seconds
+            current_time = time.time()
+            if current_time - self.last_debug_time >= CONFIG['DEBUG_INTERVAL']:
+                if self.audio_levels:
+                    avg_level = sum(self.audio_levels) / len(self.audio_levels)
+                    max_level = max(self.audio_levels)
+                    min_level = min(self.audio_levels)
+                    self.logger.info(f"Audio levels - Current: {db_level:.1f}dB, Avg: {avg_level:.1f}dB, Max: {max_level:.1f}dB, Min: {min_level:.1f}dB, Threshold: {CONFIG['DETECTION_THRESHOLD']}dB")
+                self.last_debug_time = current_time
+
             # Only process detection during operating hours
             if not self.is_operating_hours():
                 return
 
-            # Calculate dB level
-            db_level = self.calculate_db(indata)
-            
             # State machine for detection
             if self.detection_state == 'IDLE':
                 if db_level > CONFIG['DETECTION_THRESHOLD']:
                     self.detection_state = 'TRIGGERED'
                     self.trigger_time = time.time()
-                    self.logger.info(f"Gunshot detected at {db_level:.1f} dB")
+                    self.logger.info(f"🎯 GUNSHOT DETECTED at {db_level:.1f} dB (threshold: {CONFIG['DETECTION_THRESHOLD']}dB)")
             
             elif self.detection_state == 'TRIGGERED':
                 # Wait for the configured delay after trigger to capture the full gunshot sound
@@ -308,7 +326,7 @@ class GunshotLogger:
                         buffer_db = 20 * np.log10(buffer_rms + 1e-10)
                         
                         self.logger.info(
-                            f"Capturing gunshot audio, buffer size: {len(buffer_data)}, "
+                            f"💾 Capturing gunshot audio, buffer size: {len(buffer_data)}, "
                             f"buffer RMS: {buffer_rms:.6f}, buffer dB: {buffer_db:.1f}"
                         )
                         
@@ -407,33 +425,55 @@ class GunshotLogger:
                 self.rate_limited_log('error', f"Detection worker error: {e}", 'worker_error')
 
     def test_audio_capture(self):
-        """Test method to verify audio capture is working"""
+        """Test method to verify audio capture is working with REAL microphone input"""
         try:
-            # Generate a test tone (1kHz sine wave)
-            duration = 1.0  # 1 second
-            samples = int(duration * CONFIG['SAMPLE_RATE'])
-            t = np.linspace(0, duration, samples, False)
-            test_tone = 0.1 * np.sin(2 * np.pi * 1000 * t)  # 1kHz at 10% amplitude
+            self.logger.info("🔍 Testing REAL microphone input (not generating test tone)...")
             
-            if CONFIG['CHANNELS'] == 2:
-                test_tone = np.column_stack([test_tone, test_tone])
+            # Test with actual microphone input for 3 seconds
+            test_duration = 3.0
+            test_samples = int(test_duration * CONFIG['SAMPLE_RATE'])
+            
+            # Record actual audio from microphone
+            self.logger.info(f"Recording {test_duration} seconds of real audio...")
+            audio_data = sd.rec(test_samples, 
+                               samplerate=CONFIG['SAMPLE_RATE'], 
+                               channels=CONFIG['CHANNELS'], 
+                               dtype=np.float32)
+            sd.wait()  # Wait for recording to complete
+            
+            # Flatten the audio data
+            audio_data = audio_data.flatten()
             
             # Write to buffer
-            self.buffer.write(test_tone.flatten())
+            self.buffer.write(audio_data)
             
             # Get buffer data
             buffer_data = self.buffer.get_buffer()
             
+            # Calculate levels
+            rms = np.sqrt(np.mean(np.square(audio_data)))
+            db_level = 20 * np.log10(rms + 1e-10)
+            max_amp = np.max(np.abs(audio_data))
+            
             # Validate
             is_valid, validation_msg = self.validate_audio_data(buffer_data)
             
-            self.logger.info(f"Audio capture test: {validation_msg}")
-            self.logger.info(f"Test buffer size: {len(buffer_data)}")
+            self.logger.info(f"🎤 REAL Audio Test Results:")
+            self.logger.info(f"   - Audio RMS: {rms:.6f}")
+            self.logger.info(f"   - Audio dB: {db_level:.1f}dB")
+            self.logger.info(f"   - Max Amplitude: {max_amp:.6f}")
+            self.logger.info(f"   - Buffer Size: {len(buffer_data)}")
+            self.logger.info(f"   - Validation: {validation_msg}")
+            
+            if db_level > -60:  # If we're getting any reasonable audio level
+                self.logger.info("✅ Microphone is working and picking up sound!")
+            else:
+                self.logger.warning("⚠️  Microphone levels are very low - check microphone connection")
             
             return is_valid
             
         except Exception as e:
-            self.logger.error(f"Audio capture test failed: {e}")
+            self.logger.error(f"❌ Audio capture test failed: {e}")
             return False
 
     def start(self):
@@ -441,12 +481,29 @@ class GunshotLogger:
         try:
             self.running = True
             
+            # Show current audio devices
+            self.logger.info("🔊 Available audio devices:")
+            try:
+                devices = sd.query_devices()
+                for i, device in enumerate(devices):
+                    if device['max_inputs'] > 0:  # Input devices only
+                        self.logger.info(f"   Device {i}: {device['name']} (inputs: {device['max_inputs']})")
+            except Exception as e:
+                self.logger.warning(f"Could not query audio devices: {e}")
+            
+            # Show default device
+            try:
+                default_device = sd.query_devices(kind='input')
+                self.logger.info(f"🎤 Using default input device: {default_device['name']}")
+            except Exception as e:
+                self.logger.warning(f"Could not get default device: {e}")
+            
             # Run audio capture test
-            self.logger.info("Running audio capture test...")
+            self.logger.info("Running REAL audio capture test...")
             if self.test_audio_capture():
-                self.logger.info("Audio capture test passed")
+                self.logger.info("✅ Audio capture test passed")
             else:
-                self.logger.warning("Audio capture test failed - check audio configuration")
+                self.logger.warning("⚠️  Audio capture test failed - check audio configuration")
             
             # Start detection worker thread
             self.worker_thread = threading.Thread(target=self.detection_worker)
@@ -470,14 +527,19 @@ class GunshotLogger:
                 if hasattr(stream, '_streaminfo'):
                     stream._streaminfo.suggestedLatency = 0.2
                 
-                self.logger.info(f"Gunshot logger started with buffer size: {CONFIG['BUFFER_SIZE']}")
+                self.logger.info(f"🎯 Gunshot logger started! Monitoring for sounds above {CONFIG['DETECTION_THRESHOLD']}dB")
+                self.logger.info(f"   Buffer size: {CONFIG['BUFFER_SIZE']}")
+                self.logger.info(f"   Sample rate: {CONFIG['SAMPLE_RATE']}Hz")
+                self.logger.info(f"   Channels: {CONFIG['CHANNELS']}")
+                self.logger.info("   Make some noise to test detection!")
+                
                 while self.running:
                     time.sleep(1)
                     # Periodically check USB drive
                     self.usb_path = self.find_usb_drive()
 
         except Exception as e:
-            self.logger.error(f"Failed to start gunshot logger: {e}")
+            self.logger.error(f"❌ Failed to start gunshot logger: {e}")
             self.running = False
 
     def stop(self):
