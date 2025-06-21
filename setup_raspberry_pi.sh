@@ -241,10 +241,19 @@ setup_usb_mount() {
         sleep 1
     done
     
+    # If automatic detection failed, try hardcoded fallback
     if [ -z "$usb_dev" ]; then
-        print_error "No USB partition found after waiting 10 seconds."
-        print_error "Please insert a USB drive and try again."
-        return 1
+        print_warning "Automatic USB detection failed, trying hardcoded fallback..."
+        
+        # Check if /dev/sda1 exists and is unmounted
+        if [ -b "/dev/sda1" ] && ! mountpoint -q "/dev/sda1" 2>/dev/null; then
+            usb_dev="/dev/sda1"
+            print_status "Using hardcoded fallback: $usb_dev"
+        else
+            print_error "No USB partition found after waiting 10 seconds."
+            print_error "Please insert a USB drive and try again."
+            return 1
+        fi
     fi
     
     print_status "Detected USB partition: $usb_dev"
@@ -271,7 +280,15 @@ setup_usb_mount() {
         fi
     done
     
-    print_error "Failed to mount $usb_dev at $mount_point after 3 attempts."
+    # Final hardcoded fallback attempt
+    print_warning "All mount attempts failed, trying final hardcoded fallback..."
+    if sudo mount -t vfat -o "uid=$(id -u $current_user),gid=$(id -g $current_user),noatime" "/dev/sda1" "$mount_point"; then
+        print_status "✓ Hardcoded fallback successful: /dev/sda1 → $mount_point"
+        df -h "$mount_point"
+        return 0
+    fi
+    
+    print_error "Failed to mount $usb_dev at $mount_point after all attempts."
     print_error "Please check USB drive and try again."
     return 1
 }
@@ -571,13 +588,22 @@ for i in {1..10}; do
     sleep 1
 done
 
+# If automatic detection failed, try hardcoded fallback
 if [ -z "$usb_dev" ]; then
-    echo "✗ No USB partition found after waiting 10 seconds."
-    echo ""
-    echo "Manual mount options:"
-    echo "1. Find your USB device: lsblk"
-    echo "2. Mount manually: sudo mount /dev/sda1 $mount_point"
-    exit 1
+    echo "Automatic USB detection failed, trying hardcoded fallback..."
+    
+    # Check if /dev/sda1 exists and is unmounted
+    if [ -b "/dev/sda1" ] && ! mountpoint -q "/dev/sda1" 2>/dev/null; then
+        usb_dev="/dev/sda1"
+        echo "Using hardcoded fallback: $usb_dev"
+    else
+        echo "✗ No USB partition found after waiting 10 seconds."
+        echo ""
+        echo "Manual mount options:"
+        echo "1. Find your USB device: lsblk"
+        echo "2. Mount manually: sudo mount /dev/sda1 $mount_point"
+        exit 1
+    fi
 fi
 
 echo "Found USB device: $usb_dev"
@@ -602,7 +628,15 @@ for attempt in 1 2 3; do
     fi
 done
 
-echo "✗ Failed to mount $usb_dev at $mount_point after 3 attempts."
+# Final hardcoded fallback attempt
+echo "All mount attempts failed, trying final hardcoded fallback..."
+if sudo mount -t vfat -o "uid=$(id -u),gid=$(id -g),noatime" "/dev/sda1" "$mount_point"; then
+    echo "✓ Hardcoded fallback successful: /dev/sda1 → $mount_point"
+    df -h "$mount_point"
+    exit 0
+fi
+
+echo "✗ Failed to mount $usb_dev at $mount_point after all attempts."
 echo ""
 echo "Manual mount options:"
 echo "1. Find your USB device: lsblk"
@@ -612,8 +646,49 @@ EOF
 
 chmod +x mount_usb.sh
 
-# Step 13: Final verification and start
-print_step "Step 13: Final verification and service start..."
+# Step 13: Create simple manual mount script
+print_step "Step 13: Creating simple manual mount script..."
+tee manual_mount.sh > /dev/null <<EOF
+#!/bin/bash
+
+echo "=========================================="
+echo "Manual USB Mount (Emergency Fallback)"
+echo "=========================================="
+
+# Get current user
+current_user=\$(whoami)
+mount_point="/media/\$current_user/gunshots"
+
+echo "User: \$current_user"
+echo "Mount point: \$mount_point"
+
+# Create mount point
+sudo mkdir -p "\$mount_point"
+sudo chown "\$current_user:\$current_user" "\$mount_point"
+
+echo ""
+echo "Attempting to mount /dev/sda1..."
+
+# Simple mount attempt
+if sudo mount -t vfat -o "uid=\$(id -u),gid=\$(id -g),noatime" "/dev/sda1" "\$mount_point"; then
+    echo "✓ Successfully mounted /dev/sda1 → \$mount_point"
+    df -h "\$mount_point"
+    echo ""
+    echo "You can now run the setup script again."
+else
+    echo "✗ Failed to mount /dev/sda1"
+    echo ""
+    echo "Troubleshooting:"
+    echo "1. Check if USB is inserted: lsblk"
+    echo "2. Check if device exists: ls -la /dev/sda*"
+    echo "3. Try different device: sudo mount /dev/sdb1 \$mount_point"
+fi
+EOF
+
+chmod +x manual_mount.sh
+
+# Step 14: Final verification and start
+print_step "Step 14: Final verification and service start..."
 
 # Verify USB mount before starting service
 if verify_usb_mount; then
@@ -641,14 +716,15 @@ echo "=========================================="
 echo "1. Verify setup:"
 echo "   ./verify_setup.sh"
 echo ""
-echo "2. If USB not mounted, run:"
+echo "2. If USB not mounted, try these in order:"
 echo "   ./mount_usb.sh"
+echo "   ./manual_mount.sh"
 echo ""
 echo "3. Monitor logs:"
 echo "   sudo journalctl -u gunshot-logger.service -f"
 echo ""
 echo "4. Test with loud sound and check:"
-echo "   ls -la /media/pi/gunshots/"
+echo "   ls -la /media/$current_user/gunshots/"
 echo ""
 echo "5. If issues, run troubleshooting:"
 echo "   ./troubleshoot.sh"
