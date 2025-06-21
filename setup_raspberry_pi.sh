@@ -290,7 +290,7 @@ setup_usb_mount() {
         return 0
     fi
     
-    print_error "Failed to mount $usb_dev at $MOUNT_POINT after all attempts."
+    print_error "✗ Failed to mount ${usb_dev:-/dev/sda1} at $MOUNT_POINT after all attempts."
     print_error "Please check USB drive and try again."
     return 1
 }
@@ -633,7 +633,7 @@ if sudo mount -t vfat -o "uid=$(id -u),gid=$(id -g),noatime" "/dev/sda1" "$MOUNT
     exit 0
 fi
 
-echo "✗ Failed to mount $usb_dev at $MOUNT_POINT after all attempts."
+echo "✗ Failed to mount \${usb_dev:-/dev/sda1} at $MOUNT_POINT after all attempts."
 echo ""
 echo "Manual mount options:"
 echo "1. Find your USB device: lsblk"
