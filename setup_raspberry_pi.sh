@@ -11,6 +11,16 @@ set -u  # Exit on undefined variables
 trap 'echo "[ERROR] Script failed at line $LINENO. Check setup.log for details." >&2' ERR
 trap 'echo "[INFO] Setup interrupted by user." >&2' INT TERM
 
+# Figure out where config.txt really lives
+if [ -f /boot/firmware/config.txt ]; then
+  CFILE=/boot/firmware/config.txt
+elif [ -f /boot/config.txt ]; then
+  CFILE=/boot/config.txt
+else
+  echo "[ERROR] Cannot find config.txt!" >&2
+  exit 1
+fi
+
 # Get the actual user (works whether run as root via sudo or as normal user)
 ACTUAL_USER=${SUDO_USER:-$USER}
 
@@ -244,7 +254,7 @@ cleanup_usb_mounts() {
 # Function to check for a valid I2S audio overlay in the boot configuration
 check_i2s_overlay() {
     print_step "Checking for I2S audio interface configuration..."
-    local config_file="/boot/config.txt"
+    local config_file="$CFILE"
     # A regex to find common I2S dtoverlay lines
     local i2s_regex="dtoverlay=(googlevoicehat-soundcard|i2s-mems|hifiberry-dac)"
 
@@ -409,6 +419,83 @@ verify_usb_mount() {
     return 0
 }
 
+# Function to create and verify ALSA config
+create_and_verify_asound_conf() {
+    print_step "Configuring default audio device..."
+    local audio_card
+    audio_card=$(detect_audio_card)
+
+    # If you already hand-crafted /etc/asound.conf, skip this entire block
+    if grep -q "card ${audio_card}" /etc/asound.conf 2>/dev/null; then
+        print_status "Detected working /etc/asound.conf — skipping auto-rewrite."
+        return 0
+    fi
+
+    local asound_conf="/etc/asound.conf"
+    local asound_conf_bak="/etc/asound.conf.bak.$(date +%s)"
+    
+    # Back up existing config just in case
+    if [ -f "$asound_conf" ]; then
+        print_status "Backing up existing ALSA config to $asound_conf_bak"
+        run_sudo mv "$asound_conf" "$asound_conf_bak"
+    fi
+    
+    # Create the new config
+    print_status "Creating new ALSA configuration for card $audio_card..."
+    cat <<EOF | run_sudo tee "$asound_conf" > /dev/null
+pcm.!default {
+  type asym
+  capture.pcm "mic"
+  playback.pcm "speaker"
+}
+pcm.mic {
+  type plug
+  slave {
+    pcm "hw:${audio_card},0"
+    format S32_LE
+    rate 48000
+    channels 2
+  }
+}
+pcm.speaker {
+  type plug
+  slave {
+    pcm "hw:${audio_card},0"
+  }
+}
+ctl.!default {
+  type hw
+  card ${audio_card}
+}
+EOF
+
+    # VERIFY the new config. This is the crucial step.
+    print_status "Verifying new ALSA configuration with 'arecord -l'..."
+    if run_sudo arecord -l > /dev/null 2>&1; then
+        print_status "✓ New ALSA configuration is valid."
+        # Clean up old backup if verification succeeds
+        if [ -f "$asound_conf_bak" ]; then
+            run_sudo rm -f "$asound_conf_bak"
+        fi
+    else
+        print_error "ALSA VERIFICATION FAILED! The generated /etc/asound.conf is invalid for your hardware."
+        print_warning "This is the error you were seeing. The script will now self-correct."
+        
+        # Restore the backup or delete our broken file
+        if [ -f "$asound_conf_bak" ]; then
+            print_warning "Restoring original ALSA configuration from $asound_conf_bak"
+            run_sudo mv "$asound_conf_bak" "$asound_conf"
+        else
+            print_warning "Removing the invalid ALSA configuration file."
+            run_sudo rm -f "$asound_conf"
+        fi
+        
+        print_error "Audio setup failed. The 'dtoverlay' in your $CFILE does not match your physical microphone."
+        print_error "Please fix the dtoverlay and reboot before running this script again."
+        exit 1
+    fi
+}
+
 # Step 1: Install required packages (skip OS updates)
 print_step "Step 1: Updating package list and installing required packages..."
 retry sudo apt-get update
@@ -455,63 +542,10 @@ sed -i.bak \
     gunshot_logger.py
 print_status "gunshot_logger.py patched successfully for dynamic paths and default audio device."
 
-# Step 5: Configure default audio device and verify
-# This function replaces the previous, less safe method.
-create_and_verify_asound_conf() {
-    print_step "Step 5: Configuring default audio device..."
-    local asound_conf="/etc/asound.conf"
-    local asound_conf_bak="/etc/asound.conf.bak.$(date +%s)"
-    
-    # Use our more robust detection function
-    local audio_card
-    audio_card=$(detect_audio_card)
-    
-    # Back up existing config just in case
-    if [ -f "$asound_conf" ]; then
-        print_status "Backing up existing ALSA config to $asound_conf_bak"
-        sudo mv "$asound_conf" "$asound_conf_bak"
-    fi
-    
-    # Create the new config
-    print_status "Creating new ALSA configuration for card $audio_card..."
-    sudo tee "$asound_conf" > /dev/null <<EOF
-pcm.!default {
-    type hw
-    card ${audio_card}
-    device 0
-}
+# Step 5: Configure Audio
+print_step "Starting audio configuration..."
 
-ctl.!default {
-    type hw
-    card ${audio_card}
-}
-EOF
-
-    # VERIFY the new config. This is the crucial step.
-    print_status "Verifying new ALSA configuration with 'arecord -l'..."
-    if arecord -l > /dev/null 2>&1; then
-        print_status "✓ New ALSA configuration is valid."
-        sudo rm -f "$asound_conf_bak" # Clean up backup
-    else
-        print_error "ALSA VERIFICATION FAILED! The generated /etc/asound.conf is invalid for your hardware."
-        print_warning "This is the error you were seeing. The script will now self-correct."
-        
-        # Restore the backup or delete our broken file
-        if [ -f "$asound_conf_bak" ]; then
-            print_warning "Restoring original ALSA configuration from $asound_conf_bak"
-            sudo mv "$asound_conf_bak" "$asound_conf"
-        else
-            print_warning "Removing the invalid ALSA configuration file."
-            sudo rm -f "$asound_conf"
-        fi
-        
-        print_error "Audio setup failed. The 'dtoverlay' in your /boot/config.txt does not match your physical microphone."
-        print_error "Please fix the dtoverlay and reboot before running this script again."
-        exit 1
-    fi
-}
-
-# Call the new, safe function to configure audio
+# Call the new, safe function to configure audio (only if no good asound.conf found)
 create_and_verify_asound_conf
 
 # Step 6: Setup USB mounting
