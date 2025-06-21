@@ -1,0 +1,185 @@
+GUNSHOT LOGGER - RASPBERRY PI INSTALLATION GUIDE
+==================================================
+
+FRESH RASPBERRY PI SETUP (NO VIRTUAL ENVIRONMENT)
+
+PREREQUISITES:
+- Raspberry Pi 3 or 4 with Raspberry Pi OS
+- Google Voice Hat or compatible I2S microphone
+- USB drive for storage
+- Internet connection
+
+STEP-BY-STEP INSTALLATION:
+==========================
+
+STEP 1: Update System
+---------------------
+sudo apt update && sudo apt upgrade -y
+
+STEP 2: Install Required Packages
+---------------------------------
+sudo apt install -y python3 python3-pip git alsa-utils
+
+STEP 3: Clone Repository
+------------------------
+cd ~
+git clone https://github.com/quickSecureLLC/gunshot-logger.git
+cd gunshot-logger
+
+STEP 4: Install Python Dependencies
+-----------------------------------
+pip3 install numpy sounddevice scipy psutil
+
+STEP 5: Configure Audio System
+------------------------------
+# Check available audio devices
+aplay -l
+
+# Create ALSA configuration for Google Voice Hat
+sudo tee /etc/asound.conf > /dev/null <<EOF
+pcm.!default {
+    type hw
+    card 2
+    device 0
+}
+
+ctl.!default {
+    type hw
+    card 2
+}
+EOF
+
+STEP 6: Test Audio System
+-------------------------
+python3 test_audio.py
+
+STEP 7: Setup USB Storage
+-------------------------
+# Create mount directory
+sudo mkdir -p /media/pi
+sudo chown pi:pi /media/pi
+
+# Insert USB drive and mount (replace sda1 with your device)
+sudo mount /dev/sda1 /media/pi
+
+STEP 8: Create System Service
+-----------------------------
+sudo tee /etc/systemd/system/gunshot-logger.service > /dev/null <<EOF
+[Unit]
+Description=Gunshot Detection and Logging Service
+After=multi-user.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/gunshot-logger
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/usr/bin/python3 /home/pi/gunshot-logger/gunshot_logger.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+STEP 9: Enable and Start Service
+--------------------------------
+sudo systemctl daemon-reload
+sudo systemctl enable gunshot-logger.service
+sudo systemctl start gunshot-logger.service
+
+STEP 10: Verify Installation
+----------------------------
+# Check service status
+sudo systemctl status gunshot-logger.service
+
+# View logs
+sudo journalctl -u gunshot-logger.service -f
+
+# Check for recorded files (after testing)
+ls -la /media/pi/gunshots/
+
+CONFIGURATION:
+==============
+
+Edit gunshot_logger.py to adjust settings:
+
+- DETECTION_THRESHOLD: -15 (adjust for your environment)
+- OPERATING_HOURS: 09:00 to 19:00 (adjust as needed)
+- ALSA_DEVICE: 2 (change if your audio device is different)
+
+MONITORING COMMANDS:
+====================
+
+Check Service Status:
+sudo systemctl status gunshot-logger.service
+
+View Real-time Logs:
+sudo journalctl -u gunshot-logger.service -f
+
+View Recent Logs:
+sudo journalctl -u gunshot-logger.service --since "1 hour ago"
+
+Check Recorded Files:
+ls -la /media/pi/gunshots/
+
+Restart Service:
+sudo systemctl restart gunshot-logger.service
+
+TROUBLESHOOTING:
+================
+
+1. No Audio Detected:
+   aplay -l
+   cat /etc/asound.conf
+   arecord -D hw:2,0 -c 2 -r 48000 -f S16_LE -d 5 test.wav
+
+2. Service Won't Start:
+   sudo journalctl -u gunshot-logger.service -n 50
+   pip3 list | grep -E "(numpy|sounddevice|scipy|psutil)"
+
+3. No Files Saved:
+   lsblk
+   df -h | grep media
+   ls -la /media/pi/
+
+4. Too Many False Positives:
+   Increase DETECTION_THRESHOLD in gunshot_logger.py
+
+5. Silent Audio Files:
+   python3 test_audio.py
+   Check audio device configuration
+
+TESTING:
+========
+
+1. Make a loud sound (clap, etc.)
+2. Check if files are created: ls -la /media/pi/gunshots/
+3. Verify files have audio: play a WAV file
+4. Check logs: sudo journalctl -u gunshot-logger.service -f
+
+AUTOMATIC USB MOUNTING:
+=======================
+
+To auto-mount USB drive on boot, add to /etc/fstab:
+/dev/sda1 /media/pi vfat defaults 0 0
+
+PERFORMANCE TUNING:
+===================
+
+- Monitor CPU: htop
+- Check memory: free -h
+- Monitor disk: df -h
+- Adjust DETECTION_THRESHOLD for your environment
+
+SUPPORT:
+========
+
+For issues:
+1. Check troubleshooting section above
+2. Run: sudo journalctl -u gunshot-logger.service -f
+3. Test audio: python3 test_audio.py
+4. Verify setup: check all steps above
+
+The system will automatically detect gunshots during operating hours
+and save them to your USB drive with proper audio content. 
