@@ -36,8 +36,8 @@ CONFIG = {
     'GUNSHOT_DIR': 'gunshots',
     'STATE_FILE': 'gunshot_state.json',
     'LOG_FILE': 'gunshot_detection.log',
-    'BUFFER_SIZE': 16384,  # Doubled buffer size for better overflow handling
-    'LATENCY': 'high',    # High latency for better stability
+    'BUFFER_SIZE': 1024,  # Smaller buffer for faster, more responsive detection
+    'LATENCY': 'low',    # Low latency for faster response
     'MAX_QUEUE_SIZE': 100,  # Maximum number of detections to queue
     'ERROR_COOLDOWN': 60,  # Seconds to wait between repeated error messages
     'BLOCKS_PER_BUFFER': 4,  # Number of blocks to buffer
@@ -465,6 +465,26 @@ class GunshotLogger:
             self.logger.info(f"   - Buffer Size: {len(buffer_data)}")
             self.logger.info(f"   - Validation: {validation_msg}")
             
+            # Save the test file to the USB drive
+            try:
+                test_filename = "preliminary_test.wav"
+                test_filepath = self.usb_path / test_filename
+
+                # Reshape and convert to int16
+                audio_to_save = buffer_data.copy()
+                if CONFIG['CHANNELS'] == 2:
+                    if len(audio_to_save) % 2 != 0:
+                        audio_to_save = audio_to_save[:-1]
+                    audio_to_save = audio_to_save.reshape(-1, 2)
+                
+                audio_data_int16 = np.clip(audio_to_save, -1.0, 1.0)
+                audio_data_int16 = (audio_data_int16 * 32767).astype(np.int16)
+                
+                wavfile.write(str(test_filepath), CONFIG['SAMPLE_RATE'], audio_data_int16)
+                self.logger.info(f"✅ Preliminary audio test saved to: {test_filepath}")
+            except Exception as e:
+                self.logger.error(f"❌ Failed to save preliminary test file: {e}")
+
             if db_level > -60:  # If we're getting any reasonable audio level
                 self.logger.info("✅ Microphone is working and picking up sound!")
             else:
@@ -481,16 +501,22 @@ class GunshotLogger:
         try:
             self.running = True
             
-            # Show current audio devices
+            # Show current audio devices more robustly
             self.logger.info("🔊 Available audio devices:")
             try:
                 devices = sd.query_devices()
+                if not isinstance(devices, list): # Handles case where only one device is returned as a dict
+                    devices = [devices]
                 for i, device in enumerate(devices):
-                    if device['max_inputs'] > 0:  # Input devices only
-                        self.logger.info(f"   Device {i}: {device['name']} (inputs: {device['max_inputs']})")
+                    try:
+                        # Log details for devices that have inputs
+                        if device.get('max_input_channels', 0) > 0:
+                             self.logger.info(f"   - Device {i}: {device['name']} (inputs: {device['max_input_channels']})")
+                    except Exception:
+                        self.logger.warning(f"   - Could not fully query Device {i}: {device.get('name', 'Unknown')}")
             except Exception as e:
-                self.logger.warning(f"Could not query audio devices: {e}")
-            
+                self.logger.warning(f"Could not query any audio devices: {e}")
+
             # Show default device
             try:
                 default_device = sd.query_devices(kind='input')
@@ -512,7 +538,7 @@ class GunshotLogger:
 
             # Configure sounddevice settings
             sd.default.blocksize = CONFIG['BUFFER_SIZE']
-            sd.default.latency = ('high', 'high')  # High latency for both input and output
+            sd.default.latency = CONFIG['LATENCY']
             
             # Start audio stream with improved parameters - use default device
             with sd.InputStream(
