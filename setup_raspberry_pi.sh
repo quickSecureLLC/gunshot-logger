@@ -671,23 +671,23 @@ echo "Waiting for USB partition..."
 usb_dev=""
 for i in {1..10}; do
     # Look for any unmounted partition on /dev/sd*
-    usb_dev=$(lsblk -pnro NAME,TYPE,MOUNTPOINT \
-               | awk '$2=="part" && $3=="" && $1 ~ /^\/dev\/sd/ {print $1; exit}')
-    if [ -n "$usb_dev" ]; then 
+    usb_dev=\$(lsblk -pnro NAME,TYPE,MOUNTPOINT \\
+               | awk '\$2=="part" && \$3=="" && \$1 ~ /^\/dev\/sd/ {print \$1; exit}')
+    if [ -n "\$usb_dev" ]; then 
         break
     fi
-    echo "Waiting for USB device... (attempt $i/10)"
+    echo "Waiting for USB device... (attempt \$i/10)"
     sleep 1
 done
 
 # If automatic detection failed, try hardcoded fallback
-if [ -z "$usb_dev" ]; then
+if [ -z "\$usb_dev" ]; then
     echo "Automatic USB detection failed, trying hardcoded fallback..."
     
     # Check if /dev/sda1 exists and is unmounted
     if [ -b "/dev/sda1" ] && ! mountpoint -q "/dev/sda1" 2>/dev/null; then
         usb_dev="/dev/sda1"
-        echo "Using hardcoded fallback: $usb_dev"
+        echo "Using hardcoded fallback: \$usb_dev"
     else
         echo "✗ No USB partition found after waiting 10 seconds."
         echo ""
@@ -698,7 +698,7 @@ if [ -z "$usb_dev" ]; then
     fi
 fi
 
-echo "Found USB device: $usb_dev"
+echo "Found USB device: \$usb_dev"
 
 # Get filesystem type
 fstype=\$(sudo blkid -s TYPE -o value "\$usb_dev" 2>/dev/null || echo "vfat")
