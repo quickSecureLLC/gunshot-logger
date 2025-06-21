@@ -377,12 +377,18 @@ verify_usb_mount() {
 }
 
 # Step 1: Install required packages (skip OS updates)
-print_step "Step 1: Installing required packages..."
-retry sudo apt install -y python3 python3-pip git alsa-utils util-linux python3-numpy python3-scipy python3-psutil
+print_step "Step 1: Updating package list and installing required packages..."
+retry sudo apt-get update
+retry sudo apt-get install -y python3 python3-pip git alsa-utils util-linux python3-numpy python3-scipy python3-psutil libportaudio2 portaudio19-dev libportaudiocpp0
 
 # Step 2: Install pip packages that aren't available in apt
 print_step "Step 2: Installing additional Python packages..."
-retry pip3 install sounddevice --break-system-packages
+retry pip3 install --upgrade --break-system-packages sounddevice
+
+# Step 2.5: Configure User Permissions for Audio
+print_step "Step 2.5: Granting audio hardware permissions..."
+print_status "Adding user '$ACTUAL_USER' to the 'audio' group..."
+run_sudo adduser "$ACTUAL_USER" audio || print_warning "User may already be in audio group. This is fine."
 
 # Step 3: Kill existing service if running
 print_step "Step 3: Stopping existing service if running..."
@@ -859,7 +865,10 @@ echo ""
 echo "=========================================="
 echo "SETUP COMPLETE - NEXT STEPS:"
 echo "=========================================="
-echo "1. Verify setup:"
+echo -e "${YELLOW}IMPORTANT: A reboot is REQUIRED for the audio permissions to take effect.${NC}"
+echo "Please run 'sudo reboot' now."
+echo ""
+echo "After rebooting, you can verify the setup by running:"
 echo "   ./verify_setup.sh"
 echo ""
 echo "2. If USB not mounted, try these in order:"
