@@ -33,11 +33,9 @@ CONFIG = {
         'start': '09:00',
         'end': '19:00'
     },
-    'USB_MOUNT_PATH': '/media/pi',
     'GUNSHOT_DIR': 'gunshots',
     'STATE_FILE': 'gunshot_state.json',
     'LOG_FILE': 'gunshot_detection.log',
-    'ALSA_DEVICE': 2,  # Google Voice Hat device number
     'BUFFER_SIZE': 16384,  # Doubled buffer size for better overflow handling
     'LATENCY': 'high',    # High latency for better stability
     'MAX_QUEUE_SIZE': 100,  # Maximum number of detections to queue
@@ -87,12 +85,20 @@ class CircularBuffer:
             return np.zeros(1, dtype=np.float32)
 
 class GunshotLogger:
-    def __init__(self):
+    def __init__(self, usb_mount_path=None):
         self.setup_logging()
+        
+        # Set USB mount path - use command line argument, then default
+        if usb_mount_path:
+            self.usb_mount_path = Path(usb_mount_path)
+        else:
+            # Get current user and use the correct mount point
+            current_user = os.getenv('USER') or subprocess.check_output(['whoami'], text=True).strip()
+            self.usb_mount_path = Path(f"/media/{current_user}/gunshot-logger")
         
         # Verify USB mount before starting
         if not self.verify_usb_mount():
-            self.logger.error("USB drive not properly mounted. Please run ./mount_usb.sh or mount manually.")
+            self.logger.error(f"USB drive not properly mounted at {self.usb_mount_path}. Please run ./mount_usb_only.sh or mount manually.")
             raise RuntimeError("USB drive not mounted")
         
         self.buffer = CircularBuffer(
@@ -111,7 +117,7 @@ class GunshotLogger:
         self.file_counter = self.load_state()
         self.detection_queue = queue.Queue(maxsize=CONFIG['MAX_QUEUE_SIZE'])
         self.running = False
-        self.usb_path = self.find_usb_drive()
+        self.usb_path = self.usb_mount_path  # Use the verified mount path
         self.last_usb_log = 0
         self.detection_state = 'IDLE'
         self.trigger_time = None
@@ -185,9 +191,8 @@ class GunshotLogger:
             import subprocess
             import os
             
-            # Get current user and mount point
-            current_user = os.getenv('USER') or subprocess.check_output(['whoami'], text=True).strip()
-            mount_point = f"/media/{current_user}/gunshots"
+            # Use the mount path that was set in __init__
+            mount_point = str(self.usb_mount_path)
             
             # Check if mount point exists and is mounted
             result = subprocess.run(['mountpoint', '-q', mount_point], 
@@ -215,12 +220,8 @@ class GunshotLogger:
     def find_usb_drive(self):
         """Find the USB drive mount point"""
         try:
-            import os
-            import subprocess
-            
-            # Get current user and mount point
-            current_user = os.getenv('USER') or subprocess.check_output(['whoami'], text=True).strip()
-            mount_point = f"/media/{current_user}/gunshots"
+            # Use the mount path that was set in __init__
+            mount_point = str(self.usb_mount_path)
             
             # Check if mount point exists and is mounted
             result = subprocess.run(['mountpoint', '-q', mount_point], 
@@ -489,11 +490,25 @@ class GunshotLogger:
         self.logger.info("Gunshot logger stopped")
 
 def main():
-    logger = GunshotLogger()
+    """Main function"""
     try:
+        # Check if USB mount path was provided as command line argument
+        usb_mount_path = sys.argv[1] if len(sys.argv) > 1 else None
+        
+        logger = GunshotLogger(usb_mount_path)
         logger.start()
-    except KeyboardInterrupt:
-        logger.stop()
+        
+        try:
+            # Keep the main thread alive
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+            logger.stop()
+            
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
