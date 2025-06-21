@@ -66,6 +66,16 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Function to detect current user
+get_current_user() {
+    local user=$(whoami)
+    if [ -z "$user" ]; then
+        print_error "Could not determine current user"
+        exit 1
+    fi
+    echo "$user"
+}
+
 # Function to detect USB drive
 detect_usb_drive() {
     print_status "Detecting USB drive..."
@@ -122,10 +132,28 @@ detect_audio_card() {
 setup_usb_mount() {
     print_step "Setting up reliable USB mounting..."
     
+    # Get current user
+    local current_user=$(get_current_user)
+    local mount_point="/media/$current_user/gunshots"
+    
+    print_status "Using user: $current_user"
+    print_status "Mount point: $mount_point"
+    
     # Create mount directory structure
-    sudo mkdir -p /media/pi/gunshots
-    sudo chown pi:pi /media/pi/gunshots
-    sudo chmod 755 /media/pi/gunshots
+    sudo mkdir -p "$mount_point"
+    if [ $? -ne 0 ]; then
+        print_error "Failed to create mount directory: $mount_point"
+        return 1
+    fi
+    
+    # Set ownership to current user
+    sudo chown "$current_user:$current_user" "$mount_point"
+    if [ $? -ne 0 ]; then
+        print_error "Failed to set ownership of $mount_point to $current_user"
+        return 1
+    fi
+    
+    sudo chmod 755 "$mount_point"
     
     # Detect USB drive
     local usb_identifier=$(detect_usb_drive)
@@ -144,20 +172,27 @@ setup_usb_mount() {
     
     print_status "Filesystem type: $fstype"
     
-    # Create fstab entry
-    local fstab_entry="$usb_identifier /media/pi/gunshots $fstype defaults,noatime,uid=1000,gid=1000 0 2"
+    # Create fstab entry with proper syntax
+    local fstab_entry="$usb_identifier $mount_point $fstype defaults,noatime,uid=$(id -u $current_user),gid=$(id -g $current_user) 0 2"
     
     # Check if entry already exists
-    if ! grep -q "/media/pi/gunshots" /etc/fstab; then
+    if ! grep -q "$mount_point" /etc/fstab; then
         print_status "Adding USB mount to /etc/fstab..."
         echo "$fstab_entry" | sudo tee -a /etc/fstab > /dev/null
+        
+        # Verify fstab entry is valid
+        if ! sudo mount -a --fake; then
+            print_error "Invalid fstab entry added. Removing..."
+            sudo sed -i "\|$mount_point|d" /etc/fstab
+            return 1
+        fi
     else
         print_warning "USB mount entry already exists in /etc/fstab"
     fi
     
     # Try to mount
     print_status "Mounting USB drive..."
-    if sudo mount /media/pi/gunshots; then
+    if sudo mount "$mount_point"; then
         print_status "USB drive mounted successfully"
         return 0
     else
@@ -168,17 +203,20 @@ setup_usb_mount() {
 
 # Function to verify USB mount
 verify_usb_mount() {
-    if ! mountpoint -q /media/pi/gunshots; then
-        print_error "USB drive is not mounted at /media/pi/gunshots"
+    local current_user=$(get_current_user)
+    local mount_point="/media/$current_user/gunshots"
+    
+    if ! mountpoint -q "$mount_point"; then
+        print_error "USB drive is not mounted at $mount_point"
         return 1
     fi
     
-    if [ ! -w /media/pi/gunshots ]; then
+    if [ ! -w "$mount_point" ]; then
         print_error "USB drive is not writable"
         return 1
     fi
     
-    print_status "USB drive is properly mounted and writable"
+    print_status "USB drive is properly mounted and writable at $mount_point"
     return 0
 }
 
@@ -237,6 +275,11 @@ fi
 
 # Step 7: Create systemd service with pre-checks
 print_step "Step 7: Creating systemd service..."
+
+# Get current user for service configuration
+current_user=$(get_current_user)
+mount_point="/media/$current_user/gunshots"
+
 sudo tee /etc/systemd/system/gunshot-logger.service > /dev/null <<EOF
 [Unit]
 Description=Gunshot Detection and Logging Service
@@ -244,12 +287,12 @@ After=multi-user.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/gunshot-logger
+User=$current_user
+WorkingDirectory=/home/$current_user/gunshot-logger
 Environment="PYTHONUNBUFFERED=1"
-ExecStartPre=/bin/bash -c 'if ! mountpoint -q /media/pi/gunshots; then echo "USB not mounted, attempting to mount..."; mount /media/pi/gunshots || exit 1; fi'
-ExecStartPre=/bin/bash -c 'if [ ! -w /media/pi/gunshots ]; then echo "USB not writable"; exit 1; fi'
-ExecStart=/usr/bin/python3 /home/pi/gunshot-logger/gunshot_logger.py
+ExecStartPre=/bin/bash -c 'if ! mountpoint -q "$mount_point"; then echo "USB not mounted, attempting to mount..."; mount "$mount_point" || exit 1; fi'
+ExecStartPre=/bin/bash -c 'if [ ! -w "$mount_point" ]; then echo "USB not writable"; exit 1; fi'
+ExecStart=/usr/bin/python3 /home/$current_user/gunshot-logger/gunshot_logger.py
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -266,6 +309,11 @@ sudo systemctl enable gunshot-logger.service
 
 # Step 9: Create enhanced verification script
 print_step "Step 9: Creating verification script..."
+
+# Get current user for verification script
+current_user=$(get_current_user)
+mount_point="/media/$current_user/gunshots"
+
 tee verify_setup.sh > /dev/null <<EOF
 #!/bin/bash
 
@@ -293,10 +341,10 @@ aplay -l
 
 echo ""
 echo "4. Checking USB drive mount..."
-if mountpoint -q /media/pi/gunshots; then
+if mountpoint -q "$mount_point"; then
     echo "✓ USB drive is mounted"
-    df -h /media/pi/gunshots
-    ls -la /media/pi/gunshots/
+    df -h "$mount_point"
+    ls -la "$mount_point/"
 else
     echo "✗ USB drive is not mounted"
     echo "Available USB devices:"
@@ -305,9 +353,9 @@ fi
 
 echo ""
 echo "5. Checking fstab entry..."
-if grep -q "/media/pi/gunshots" /etc/fstab; then
+if grep -q "$mount_point" /etc/fstab; then
     echo "✓ fstab entry exists"
-    grep "/media/pi/gunshots" /etc/fstab
+    grep "$mount_point" /etc/fstab
 else
     echo "✗ fstab entry missing"
 fi
@@ -341,6 +389,11 @@ chmod +x verify_setup.sh
 
 # Step 10: Create enhanced troubleshooting script
 print_step "Step 10: Creating troubleshooting script..."
+
+# Get current user for troubleshooting script
+current_user=$(get_current_user)
+mount_point="/media/$current_user/gunshots"
+
 tee troubleshoot.sh > /dev/null <<EOF
 #!/bin/bash
 
@@ -393,6 +446,11 @@ chmod +x troubleshoot.sh
 
 # Step 11: Create USB mount helper script
 print_step "Step 11: Creating USB mount helper..."
+
+# Get current user for mount helper
+current_user=$(get_current_user)
+mount_point="/media/$current_user/gunshots"
+
 tee mount_usb.sh > /dev/null <<EOF
 #!/bin/bash
 
@@ -407,16 +465,16 @@ echo ""
 echo "Attempting to mount USB drive..."
 
 # Try to mount using fstab
-if sudo mount /media/pi/gunshots; then
+if sudo mount "$mount_point"; then
     echo "✓ USB drive mounted successfully"
-    df -h /media/pi/gunshots
+    df -h "$mount_point"
 else
     echo "✗ Failed to mount using fstab"
     echo ""
     echo "Manual mount options:"
     echo "1. Find your USB device: lsblk"
-    echo "2. Mount manually: sudo mount /dev/sda1 /media/pi/gunshots"
-    echo "3. Or mount by UUID: sudo mount UUID=your-uuid /media/pi/gunshots"
+    echo "2. Mount manually: sudo mount /dev/sda1 $mount_point"
+    echo "3. Or mount by UUID: sudo mount UUID=your-uuid $mount_point"
 fi
 EOF
 

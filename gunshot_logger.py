@@ -183,16 +183,21 @@ class GunshotLogger:
         """Verify that USB drive is properly mounted and writable"""
         try:
             import subprocess
+            import os
+            
+            # Get current user and mount point
+            current_user = os.getenv('USER') or subprocess.check_output(['whoami'], text=True).strip()
+            mount_point = f"/media/{current_user}/gunshots"
             
             # Check if mount point exists and is mounted
-            result = subprocess.run(['mountpoint', '-q', '/media/pi/gunshots'], 
+            result = subprocess.run(['mountpoint', '-q', mount_point], 
                                   capture_output=True, text=True)
             if result.returncode != 0:
-                self.logger.error("USB drive is not mounted at /media/pi/gunshots")
+                self.logger.error(f"USB drive is not mounted at {mount_point}")
                 return False
             
             # Check if directory is writable
-            test_file = Path('/media/pi/gunshots/.test_write')
+            test_file = Path(mount_point) / '.test_write'
             try:
                 test_file.touch()
                 test_file.unlink()
@@ -200,7 +205,7 @@ class GunshotLogger:
                 self.logger.error(f"USB drive is not writable: {e}")
                 return False
             
-            self.logger.info("USB drive is properly mounted and writable")
+            self.logger.info(f"USB drive is properly mounted and writable at {mount_point}")
             return True
             
         except Exception as e:
@@ -210,8 +215,22 @@ class GunshotLogger:
     def find_usb_drive(self):
         """Find the USB drive mount point"""
         try:
+            import os
+            import subprocess
+            
+            # Get current user and mount point
+            current_user = os.getenv('USER') or subprocess.check_output(['whoami'], text=True).strip()
+            mount_point = f"/media/{current_user}/gunshots"
+            
+            # Check if mount point exists and is mounted
+            result = subprocess.run(['mountpoint', '-q', mount_point], 
+                                  capture_output=True, text=True)
+            if result.returncode == 0:
+                return Path(mount_point)
+            
+            # Fallback to checking all mounted media
             for part in psutil.disk_partitions(all=False):
-                if part.mountpoint.startswith('/media/pi'):
+                if part.mountpoint.startswith('/media/'):
                     return Path(part.mountpoint)
             
             current_time = time.time()
