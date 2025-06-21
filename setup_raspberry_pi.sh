@@ -234,20 +234,29 @@ cleanup_usb_mounts() {
     print_status "USB cleanup complete"
 }
 
-# Function to ensure I2S audio overlay is enabled in boot config
-ensure_i2s_overlay() {
-    print_step "Ensuring I2S audio interface is enabled..."
+# Function to check for a valid I2S audio overlay in the boot configuration
+check_i2s_overlay() {
+    print_step "Checking for I2S audio interface configuration..."
     local config_file="/boot/config.txt"
-    local overlay_line="dtoverlay=googlevoicehat-soundcard"
+    # A regex to find common I2S dtoverlay lines
+    local i2s_regex="dtoverlay=(googlevoicehat-soundcard|i2s-mems|hifiberry-dac)"
 
-    if ! sudo grep -q "^${overlay_line}" "$config_file"; then
-        print_warning "I2S overlay not found in $config_file."
-        print_status "Adding '$overlay_line' to $config_file..."
-        echo -e "\n# Enable Google Voice HAT I2S microphone\n${overlay_line}\n" | sudo tee -a "$config_file" > /dev/null
-        print_warning "A reboot is REQUIRED for this change to take effect."
-        REBOOT_REQUIRED=true
+    if sudo grep -q -E "$i2s_regex" "$config_file"; then
+        print_status "Found a recognized I2S overlay in $config_file."
+        sudo grep -E "$i2s_regex" "$config_file" | tail -n1
     else
-        print_status "I2S overlay is already configured."
+        print_error "CRITICAL: No recognized I2S audio overlay found in $config_file."
+        print_warning "This is the most likely cause of the PortAudio error."
+        echo ""
+        print_warning "You must MANUALLY edit /boot/config.txt to add the correct 'dtoverlay' for your microphone."
+        print_status "Example for Google Voice HAT:      dtoverlay=googlevoicehat-soundcard"
+        print_status "Example for SPH0645LM4H mics:      dtoverlay=i2s-mems"
+        print_status "Example for other I2S DACs:        dtoverlay=hifiberry-dac"
+        echo ""
+        print_warning "After editing the file, you MUST REBOOT for the change to take effect."
+        echo ""
+        # We cannot proceed if the fundamental hardware driver is not configured.
+        exit 1
     fi
 }
 
@@ -427,7 +436,7 @@ retry git clone https://github.com/quickSecureLLC/gunshot-logger.git
 cd gunshot-logger
 
 # Ensure the I2S hardware overlay is configured before proceeding
-ensure_i2s_overlay
+check_i2s_overlay
 
 print_step "Step 4.5: Patching Python script for robust audio and mount point handling..."
 # Use sed to replace hardcoded values with more robust logic
@@ -475,9 +484,25 @@ if ! python3 test_audio.py; then
 fi
 
 print_status "Probing hardware with Python sounddevice..."
-if ! python3 -c "import sounddevice as sd; print(sd.query_devices())"; then
+if ! python3 -c "import sounddevice as sd; print('sounddevice version:', sd.__version__); print(sd.query_devices())"; then
     print_error "Failed to query audio devices via Python. PortAudio or ALSA may be misconfigured."
-    print_error "A REBOOT IS LIKELY REQUIRED to activate hardware changes."
+    print_error "This is a critical error, indicating the OS cannot see the microphone."
+    echo ""
+    print_warning "RUNNING DIAGNOSTICS..."
+    echo "--- ALSA Playback Devices (aplay -l) ---"
+    aplay -l || true
+    echo "--- ALSA Capture Devices (arecord -l) ---"
+    arecord -l || true
+    echo "--- Kernel Log (dmesg | grep -i -E 'audio|i2s|voicehat|snd') ---"
+    dmesg | grep -i -E 'audio|i2s|voicehat|snd' --color=never || echo "No relevant audio-related kernel messages."
+    echo "--- ALSA Config (/etc/asound.conf) ---"
+    cat /etc/asound.conf || echo "/etc/asound.conf not found."
+    echo "--- Boot Config (/boot/config.txt audio overlays) ---"
+    grep -i "dtoverlay" /boot/config.txt || echo "No dtoverlay found in /boot/config.txt"
+    echo "--- DIAGNOSTICS END ---"
+    echo ""
+    print_error "A REBOOT IS LIKELY REQUIRED if /boot/config.txt was changed."
+    print_error "If rebooting does not help, the 'dtoverlay' in /boot/config.txt may be incorrect for your specific I2S microphone."
     exit 1
 fi
 print_status "Audio hardware probed successfully."
@@ -637,6 +662,20 @@ cat /proc/asound/cards
 echo ""
 echo "ALSA config:"
 cat /etc/asound.conf
+
+echo ""
+echo "--- Full Audio Diagnostics ---"
+echo "--- ALSA Playback Devices (aplay -l) ---"
+aplay -l || true
+echo "--- ALSA Capture Devices (arecord -l) ---"
+arecord -l || true
+echo "--- Kernel Log (dmesg | grep -i -E 'audio|i2s|voicehat|snd') ---"
+dmesg | grep -i -E 'audio|i2s|voicehat|snd' --color=never || echo "No relevant audio-related kernel messages."
+echo "--- Boot Config (/boot/config.txt audio overlays) ---"
+grep -i "dtoverlay" /boot/config.txt || echo "No dtoverlay found in /boot/config.txt"
+echo "--- Python sounddevice Probe ---"
+python3 -c "import sounddevice as sd; print('sounddevice version:', sd.__version__); print(sd.query_devices())" || echo 'Python sounddevice probe failed.'
+echo "--- Diagnostics End ---"
 
 echo ""
 echo "4. Restarting service..."
