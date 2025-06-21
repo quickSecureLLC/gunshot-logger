@@ -11,8 +11,11 @@ set -u  # Exit on undefined variables
 trap 'echo "[ERROR] Script failed at line $LINENO. Check setup.log for details." >&2' ERR
 trap 'echo "[INFO] Setup interrupted by user." >&2' INT TERM
 
-# Canonical mount point - use consistent name everywhere
-MOUNT_POINT="/media/$(whoami)/gunshot-logger"
+# Get the actual user (works whether run as root via sudo or as normal user)
+ACTUAL_USER=${SUDO_USER:-$USER}
+
+# Canonical mount point - use consistent name everywhere, based on the actual user
+MOUNT_POINT="/media/$ACTUAL_USER/gunshot-logger"
 
 # Setup logging
 exec 1> >(tee -a setup.log)
@@ -36,9 +39,6 @@ if [ "$EUID" -eq 0 ] && [ "$SUDO_USER" = "" ]; then
     echo "[INFO] Usage: ./setup_raspberry_pi.sh (not sudo ./setup_raspberry_pi.sh)"
     exit 1
 fi
-
-# Get the actual user (works whether run as root via sudo or as normal user)
-ACTUAL_USER=${SUDO_USER:-$USER}
 
 if ! command -v sudo >/dev/null 2>&1; then
     echo "[ERROR] sudo is required but not installed."
@@ -454,8 +454,8 @@ Type=simple
 User=$current_user
 WorkingDirectory=/home/$current_user/gunshot-logger
 Environment="PYTHONUNBUFFERED=1"
-ExecStartPre=/bin/bash -c 'if [ ! -d "$MOUNT_POINT" ]; then echo "Mount point does not exist"; exit 1; fi'
-ExecStartPre=/bin/bash -c 'if [ ! -w "$MOUNT_POINT" ]; then echo "Mount point not writable"; exit 1; fi'
+ExecStartPre=/usr/bin/test -d "$MOUNT_POINT"
+ExecStartPre=/usr/bin/test -w "$MOUNT_POINT"
 ExecStart=/usr/bin/python3 /home/$current_user/gunshot-logger/gunshot_logger.py
 Restart=always
 RestartSec=5
